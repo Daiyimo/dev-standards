@@ -464,6 +464,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 - **若项目配置了 pre-commit 框架**:运行 `pre-commit run --all-files`,必须全绿才提交
 - **未配置 pre-commit 的项目**:运行该项目实际的 lint / format / 测试命令(见其 README / `package.json` / `pyproject.toml`),全通过才提交
+- **文档同步检查**:`commit` / `push` 前检查本次代码改动是否已同步到 README（及其他面向用户的文档),确保文档与实现一致(呼应附录 B.5 知识收尾）
 
 ### 9.4 回滚与失败恢复
 

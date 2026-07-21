@@ -3,6 +3,13 @@
 本文件记录 `dev-standards` 工程规范自身的演进(不是使用规范的项目的 changelog)。
 格式遵循 [Keep a Changelog](https://keepachangelog.com);条目写**规范意图的变化**,不是逐字 diff。
 
+## [Unreleased] — 2026-07-21
+
+### Added
+- **10.4 项目交付完整性**:process.md 第十章新增——作为独立产物交付的项目须覆盖安装/卸载/一键更新/用户手动指令/Agent 一键指令五项(从工作区记忆「项目架构规范」沉淀为正式规范,不再仅靠易失 memory 兜底)。
+- **9.3 文档同步检查**:提交前检查新增一条——`commit`/`push` 前确认代码改动已同步到 README 等面向用户文档(呼应附录 B.5 知识收尾)。
+- **README 维护约定补「常驻铁律同步」**:明确工作区 CLAUDE.md 6 条常驻铁律是 skill 第三~九章的精简副本,改动对应章节时须检查 CLAUDE.md 措辞是否需同步(治理有意重复带来的漂移风险)。
+
 ## [Unreleased] — 2026-07-20
 
 ### Changed

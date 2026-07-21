@@ -70,6 +70,7 @@ dev-standards/
 ## 维护约定
 
 - **单一权威,禁止漂移**:派发/PlanMode 判定只在 **16.2 决策树**;完成前检查只在**第十七章**;触发条件只在 **frontmatter description**。其余位置只放指针,不复制规则。
+- **常驻铁律同步**:工作区 `CLAUDE.md` 常驻的 6 条铁律是本 skill 第三~九章对应条款的精简副本(有意重复,供未加载 skill 的轻活兜底)。改动这些章节(尤其提交/异常/测试/最小化改动)时,检查 CLAUDE.md 常驻铁律的措辞是否需同步。
 - **改规范先看 CHANGELOG**:任何对规范意图的改动,记一条到 `CHANGELOG.md`(Keep a Changelog 格式,写意图变化而非逐字 diff)。
 - **身份/凭证不硬编码**:GitHub token、git 身份见工作区 / 全局 `CLAUDE.md`,本 skill 不复述、不写入密钥。
 
