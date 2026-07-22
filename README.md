@@ -25,6 +25,8 @@ dev-standards/
 ├── SKILL.md                    # 主文件:常驻规则(第八/十/十四章仅留作用域摘要+指针)
 ├── README.md                   # 本文件
 ├── CHANGELOG.md                # 规范自身的演进记录(非使用项目的 changelog)
+├── install.sh                  # 一键安装 / 更新(幂等)
+├── uninstall.sh                # 一键卸载
 └── references/                 # 按需查阅,用到才 Read,不凭记忆复述
     ├── process.md              # 第八/十/十四章全文(可观测性/文档/分支策略,生产/协作语境才强制)
     ├── context-md.md           # 附录 A — 领域语言(CONTEXT.md 模式)+ ADR 三条件
@@ -53,9 +55,44 @@ dev-standards/
 
 目录以 `SKILL.md` 开头为唯一权威,此处不复制(防漂移)。两个最常用入口:**16.2 决策树** = 派发 / PlanMode 判定唯一权威;**第十七章** = 完成前自检唯一权威清单。
 
-## 安装方式
+## 安装 / 更新 / 卸载
 
-整个 `dev-standards/` 文件夹是自包含的,直接拷贝即可(文件夹名必须保持 `dev-standards`,与 frontmatter `name` 一致):
+> 需要 `git`;在 macOS / Linux / Windows(Git Bash)通用。默认装到用户级 `~/.claude/skills/dev-standards/`。
+
+### 一句话安装(= 一句话更新)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Daiyimo/dev-standards/main/install.sh | bash
+```
+
+脚本**幂等**:未安装则安装,已安装则强制同步到最新版本——所以**更新就是重跑同一条命令**,无需记第二条。装完重启 Claude Code,或在对话里说「启动规范」即可激活。
+
+**项目级安装**(随某个仓库共享):指定目标目录即可
+
+```bash
+CLAUDE_SKILLS_DIR=/path/to/project/.claude/skills \
+  bash <(curl -fsSL https://raw.githubusercontent.com/Daiyimo/dev-standards/main/install.sh)
+```
+
+### 一句话卸载
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Daiyimo/dev-standards/main/uninstall.sh | bash
+```
+
+干净移除 `~/.claude/skills/dev-standards/`,不触碰其他 skill(项目级卸载需带上安装时相同的 `CLAUDE_SKILLS_DIR`)。
+
+### 让 Agent 一键安装
+
+在 Claude Code 里直接说:
+
+> 帮我安装 dev-standards:`https://raw.githubusercontent.com/Daiyimo/dev-standards/main/install.sh`
+
+Agent 会拉取并执行上述脚本(无人值守、幂等、可复跑)。
+
+### 手动安装(不想用脚本时)
+
+整个 `dev-standards/` 文件夹自包含,直接拷贝即可(文件夹名必须保持 `dev-standards`,与 frontmatter `name` 一致):
 
 - **用户级**(所有项目可用):放到 `~/.claude/skills/dev-standards/`
 - **项目级**(随仓库共享):放到 `<项目>/.claude/skills/dev-standards/`

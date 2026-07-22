@@ -3,6 +3,11 @@
 本文件记录 `dev-standards` 工程规范自身的演进(不是使用规范的项目的 changelog)。
 格式遵循 [Keep a Changelog](https://keepachangelog.com);条目写**规范意图的变化**,不是逐字 diff。
 
+## [Unreleased] — 2026-07-22
+
+### Added
+- **一键安装 / 更新 / 卸载脚本**:新增 `install.sh`(幂等——未装则装、已装则强制同步到最新,安装即更新)与 `uninstall.sh`(干净移除,不触碰其他 skill),支持 `CLAUDE_SKILLS_DIR` 做项目级安装。README「安装方式」重写为「安装 / 更新 / 卸载」,补齐 10.4 项目交付完整性五项(一句话安装=更新、卸载、Agent 一键指令、手动安装)。此前只有「手动拷贝文件夹」一种方式,不满足 10.4。
+
 ## [Unreleased] — 2026-07-21
 
 ### Added
