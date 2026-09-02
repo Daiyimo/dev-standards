@@ -1,73 +1,60 @@
 # dev-standards
 
-多项目工作区的**完整工程规范** skill。从常驻的 `CLAUDE.md` 拆出、按需激活,避免把整套重规范常驻进上下文拖累轻活。
+一个**功能优先、按风险启用**的 Claude Code 工程复核 skill。
 
----
+## 核心取向
 
-## 这是什么
-
-一套可执行的开发行为规范:第一性原理 / 对抗性审查、代码质量铁律、性能、测试、可观测性、提交、文档、安全、Agent 协同、知识收尾、完成前自检 + 通用模式库。激活后规范**默认强制执行**(两处例外:用户有最终决定权,见正文第十二章;与子项目自带规则冲突时按工作区 CLAUDE.md 优先级链处理)。
-
-**作用域**:所有条款针对**当前正在操作的那个子项目**,不是工作区根目录。开始编辑前先确认该项目的技术栈与测试命令(读其 `README` / `package.json` / `pyproject.toml`),不假设跨项目一致。
+- 默认先交付用户可见功能和验收标准。
+- 普通新功能、一般 Bug 修复、常规重构不自动加载本 skill。
+- 安全、性能、可观测性和完整工程流程只在有真实风险或用户明确要求时启用。
+- 不为假想需求增加框架、抽象层、依赖或防御性代码。
+- 验证以本次改动的主路径和回归风险为中心，不追求统一覆盖率或清单打卡。
 
 ## 何时激活
 
-**触发条件以 `SKILL.md` frontmatter 的 `description` 为唯一权威**(单点维护)。概括:
+触发条件以 `SKILL.md` frontmatter 的 `description` 为唯一权威。简要来说：
 
-- ✅ 启用:正式重活(新功能 / 重构 / Bug 修复 / 代码审查 / 提交前)、用户说"启动规范 / 按规范来"、指定子项目路径要求开发排查。
-- ❌ 不启用:短程一次性任务、临时查询、纯问答、单行 / 单文件确定性小改、工作区外项目——这些只走工作区 `CLAUDE.md` 的安全与沟通底线。
-- 不确定是否属于轻活时,按启用处理,激活后再按各章作用域条款裁剪。
+- 用户明确要求启用规范、完整合规检查、安全/性能审计或发布前检查。
+- 当前改动确实触及认证、授权、支付、真实隐私数据、密钥、破坏性迁移或公开不可信输入。
+
+除此之外不自动激活；不确定时默认不激活。
 
 ## 文件结构
 
-```
+```text
 dev-standards/
-├── SKILL.md                    # 主文件:常驻规则(第八/十/十四章仅留作用域摘要+指针)
-├── README.md                   # 本文件
-├── CHANGELOG.md                # 规范自身的演进记录(非使用项目的 changelog)
-├── install.sh                  # 一键安装 / 更新(幂等)
+├── SKILL.md                    # 轻量主规则，功能优先
+├── README.md                   # 使用和安装说明
+├── CHANGELOG.md                # 规范演进记录
+├── install.sh                  # 一键安装 / 更新（幂等）
 ├── uninstall.sh                # 一键卸载
-└── references/                 # 按需查阅,用到才 Read,不凭记忆复述
-    ├── process.md              # 第八/十/十四章全文(可观测性/文档/分支策略,生产/协作语境才强制)
-    ├── context-md.md           # 附录 A — 领域语言(CONTEXT.md 模式)+ ADR 三条件
-    ├── methodology.md          # 附录 B — 调试/TDD/原型/架构自检/知识收尾协议
-    └── patterns.md             # 附录 C — 15 个通用模式骨架(配置/脱敏/重试/缓存/状态机…)
+└── references/                 # 明确需要时才读取的资料库
+    ├── process.md              # 生产可观测性、文档交付、分支/PR
+    ├── context-md.md           # CONTEXT.md 与 ADR
+    ├── methodology.md          # 调试、TDD、原型、架构体检、知识收尾
+    └── patterns.md             # 可选实现模式
 ```
 
-**加载约定**:`SKILL.md` 常驻"必须始终生效的规则";第八/十/十四章细节与附录 A/B/C 是"用到才翻"的参考,需要时用 Read 读取对应文件。
+参考文件不是自动生效的规范。不要在每次激活时全部读取，也不要因为参考中存在某种模式就自动把它加入项目。
 
-## 两个核心机制(读正文前先懂这俩)
+## 两种模式
 
-### 1. 严重度分级(治理"铁律通胀")
-
-第五~七章的"铁律"不都同等阻断,分两级:
-
-| 级别 | 条款 | 阻断力 |
-|------|------|--------|
-| **P0 阻断** | 5.6 异常静默吞、6.1 热路径回退、7.1 新功能无测试、7.5 测试红 + 安全底线 | 任何项目(含 solo)禁止放行 |
-| **P1 质量门槛** | 5.1 类型、5.2 文档、5.5 导入、6.2、6.3、7.2、7.3、7.4 | 提交前应修;solo 可延到合并 / 收尾前,不阻断探索性中间 commit |
-
-### 2. 生产/协作 vs solo 作用域
-
-重量级章节(**第八** 可观测性、**第十** 文档、**第十四** 分支/PR)仅在**有真实部署产物或协作者**时强制;solo 个人项目按 13.1「轻量优先、零外部依赖」执行。这三章的细节已外置到 `references/process.md`,主文件只留各章作用域摘要。
-
-## 章节速查
-
-目录以 `SKILL.md` 开头为唯一权威,此处不复制(防漂移)。两个最常用入口:**16.2 决策树** = 派发 / PlanMode 判定唯一权威;**第十七章** = 完成前自检唯一权威清单。
+- **功能模式（默认）**：只检查与当前改动直接相关的风险，不输出完整合规清单。
+- **严格复核模式**：仅在用户明确要求完整合规、发布前、安全或性能审计时使用，并限制在用户指定范围。
 
 ## 安装 / 更新 / 卸载
 
-> 需要 `git`;在 macOS / Linux / Windows(Git Bash)通用。默认装到用户级 `~/.claude/skills/dev-standards/`。
+> 安装脚本需要 `git`，可在 macOS、Linux 和 Windows Git Bash 中使用。默认安装到用户级 `~/.claude/skills/dev-standards/`。
 
-### 一句话安装(= 一句话更新)
+### 一句话安装（也是更新命令）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Daiyimo/dev-standards/main/install.sh | bash
 ```
 
-脚本**幂等**:未安装则安装,已安装则强制同步到最新版本——所以**更新就是重跑同一条命令**,无需记第二条。装完重启 Claude Code,或在对话里说「启动规范」即可激活。
+脚本是幂等的：未安装时安装，已安装时同步到最新版本。更新后建议新开 Claude Code 会话，避免旧版 skill 内容仍留在当前会话上下文中。
 
-**项目级安装**(随某个仓库共享):指定目标目录即可
+### 项目级安装
 
 ```bash
 CLAUDE_SKILLS_DIR=/path/to/project/.claude/skills \
@@ -80,37 +67,36 @@ CLAUDE_SKILLS_DIR=/path/to/project/.claude/skills \
 curl -fsSL https://raw.githubusercontent.com/Daiyimo/dev-standards/main/uninstall.sh | bash
 ```
 
-干净移除 `~/.claude/skills/dev-standards/`,不触碰其他 skill(项目级卸载需带上安装时相同的 `CLAUDE_SKILLS_DIR`)。
+项目级卸载需要设置与安装时相同的 `CLAUDE_SKILLS_DIR`。脚本只移除目标 `dev-standards` 目录，不触碰其他 skill。
 
-### 让 Agent 一键安装
+### 让 Agent 安装
 
-在 Claude Code 里直接说:
+在 Claude Code 中直接说：
 
-> 帮我安装 dev-standards:`https://raw.githubusercontent.com/Daiyimo/dev-standards/main/install.sh`
+> 帮我安装 dev-standards：`https://raw.githubusercontent.com/Daiyimo/dev-standards/main/install.sh`
 
-Agent 会拉取并执行上述脚本(无人值守、幂等、可复跑)。
+### 手动安装
 
-### 手动安装(不想用脚本时)
+整个目录是自包含的，直接复制到以下任一位置：
 
-整个 `dev-standards/` 文件夹自包含,直接拷贝即可(文件夹名必须保持 `dev-standards`,与 frontmatter `name` 一致):
+- 用户级：`~/.claude/skills/dev-standards/`
+- 项目级：`<项目>/.claude/skills/dev-standards/`
 
-- **用户级**(所有项目可用):放到 `~/.claude/skills/dev-standards/`
-- **项目级**(随仓库共享):放到 `<项目>/.claude/skills/dev-standards/`
-
-无需其他配置;无工作区 `CLAUDE.md` 时,安全底线以 `SKILL.md` 第十一章为准。
+目录名需保持为 `dev-standards`。
 
 ## 依赖
 
-- **superpowers 插件**(装于 `~/.claude/plugins/`):第一章的 `superpowers:*` skill 协同表依赖它;未安装则该章失效,其余章节不受影响。
-- **harness 能力**:agent 类型、Dynamic Workflow(`ultracode`)以当前运行环境实际提供者为准。
+- skill 本身不依赖 superpowers、subagent 或 Dynamic Workflow。
+- `install.sh` / `uninstall.sh` 使用 Bash；在线安装和更新需要 `git`、`curl`。
 
-## 维护约定
+## 维护原则
 
-- **单一权威,禁止漂移**:派发/PlanMode 判定只在 **16.2 决策树**;完成前检查只在**第十七章**;触发条件只在 **frontmatter description**。其余位置只放指针,不复制规则。
-- **常驻铁律同步**:工作区 `CLAUDE.md` 常驻的 6 条铁律是本 skill 第三~九章对应条款的精简副本(有意重复,供未加载 skill 的轻活兜底)。改动这些章节(尤其提交/异常/测试/最小化改动)时,检查 CLAUDE.md 常驻铁律的措辞是否需同步。
-- **改规范先看 CHANGELOG**:任何对规范意图的改动,记一条到 `CHANGELOG.md`(Keep a Changelog 格式,写意图变化而非逐字 diff)。
-- **身份/凭证不硬编码**:GitHub token、git 身份见工作区 / 全局 `CLAUDE.md`,本 skill 不复述、不写入密钥。
+- 触发条件只在 `SKILL.md` frontmatter 维护。
+- 主文件只保留高频决策规则；长方法和模式留在 `references/`。
+- 新规则必须说明它保护的真实功能或风险，不能只因为“最佳实践”就升级为默认强制项。
+- 修改规范意图时，在 `CHANGELOG.md` 记录原因。
+- 发布前确认源码目录与实际安装副本的 `SKILL.md`、`references/` 保持一致。
 
 ## 灵感来源
 
-部分结构化方法论受 [Matt Pocock's Skills](https://github.com/mattpocock/skills) 与 [khazix-skills / neat-freak](https://github.com/KKKKhazix/khazix-skills)(附录 B.5 知识收尾)启发。
+部分可选方法论参考 [Matt Pocock's Skills](https://github.com/mattpocock/skills) 与 [khazix-skills / neat-freak](https://github.com/KKKKhazix/khazix-skills)。这些资料只在对应工作流被明确选择时使用。

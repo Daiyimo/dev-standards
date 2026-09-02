@@ -1,6 +1,6 @@
 # 附录 A、领域语言（CONTEXT.md 模式）
 
-> 本文件是 `dev-standards` skill 的按需参考,对应原「附录 A」。需要时由主 SKILL.md 指引读取。
+> 本文件是可选资料。仅在用户明确要求创建/维护 `CONTEXT.md` 或 ADR 时读取，不随 `dev-standards` 自动生效。
 > **来源:Matt Pocock 最推崇的技法**。通过建立项目专属术语表,解决 AI 每次 session 都要重新理解项目 jargon 的问题。
 
 ## 什么是 CONTEXT.md
