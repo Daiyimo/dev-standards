@@ -61,6 +61,17 @@ CLAUDE_SKILLS_DIR=/path/to/project/.claude/skills \
   bash <(curl -fsSL https://raw.githubusercontent.com/Daiyimo/dev-standards/main/install.sh)
 ```
 
+### 从本地源码同步（开发用）
+
+改完源码不想先 push 就要部署到本机时：
+
+```bash
+CLAUDE_SKILLS_SRC=/path/to/dev-standards bash install.sh
+```
+
+从本地源码目录直接同步到 `CLAUDE_SKILLS_DIR`（默认用户级），不联网、不读 GitHub。
+只在本机有效；换机器或分享给别人仍然用远端那几条。
+
 ### 一句话卸载
 
 ```bash
@@ -95,7 +106,9 @@ curl -fsSL https://raw.githubusercontent.com/Daiyimo/dev-standards/main/uninstal
 - 主文件只保留高频决策规则；长方法和模式留在 `references/`。
 - 新规则必须说明它保护的真实功能或风险，不能只因为“最佳实践”就升级为默认强制项。
 - 修改规范意图时，在 `CHANGELOG.md` 记录原因。
+- 默认安装路径从 `origin/main` 拉取，本地源码的改动必须 commit + push 后才会对安装副本生效；不想先 push 就用 `CLAUDE_SKILLS_SRC` 从本地同步。
 - 发布前确认源码目录与实际安装副本的 `SKILL.md`、`references/` 保持一致。
+- 只装一处：不要在工作区里再放一份 `.claude/skills/dev-standards`，那会变成漂移源，出现"改了源码却没生效"。
 
 ## 灵感来源
 
