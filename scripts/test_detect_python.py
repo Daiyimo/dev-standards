@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""detect_python 的回归测试。
+
+核心是 pylint 不可用时的回退路径:README 与 standards-registry 承诺
+"装不上自动退回内置 AST 检测(只剩行宽 + CCN)"。这条路径曾静默漏报——
+pylint_findings() 失败后返回空列表,但 use_pylint 没被翻成 False,
+collect() 于是把 AST 的行宽结果整批过滤掉,回退后只剩 CCN。
+
+跑法: python -m pytest scripts/test_detect_python.py -q
+"""
+
+from __future__ import annotations
+
+import builtins
+import os
+import subprocess
+import sys
+from types import SimpleNamespace
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# pylint: disable=wrong-import-position
+import detect_python  # noqa: E402
+
+# 130 字符,超过 120 阈值;字符串字面量保持完整,只靠外层赋值超限。
+# ("value = " 8 字符 + repr 的一对引号 2 + 120 个 x)
+LONG_LINE = "value = " + repr("x" * 120)
+
+# 圈复杂度 3(基础 1 + if + elif;elif 在 AST 里是嵌套 If)。return 不是判定点,
+# 不加权——之前这里写 4 并把 return 算进算式,是错的。
+BRANCHY = """\
+def decide(flag):
+    if flag:
+        return 1
+    elif flag is None:
+        return 2
+    return 3
+"""
+
+BROAD_EXCEPT = """\
+try:
+    pass
+except Exception:
+    pass
+"""
+
+
+def _pylint_unlaunchable(*args, **kwargs):
+    """模拟进程起不来:解释器缺失、超时等,subprocess.run 抛异常。"""
+    raise OSError("pylint not installed")
+
+
+def _simulate_not_installed(monkeypatch):
+    """模拟 pylint 未安装:可用性探测返回 None。
+
+    同时断言实现不会真的去启动 pylint 进程——未安装时应当先探测、直接回退。
+    少了这条断言,样本里的超长行会被真实 pylint 报出来,测试会因错误的原因通过。
+    """
+    def _must_not_spawn(*args, **kwargs):
+        raise AssertionError("pylint 未安装时不应启动 pylint 进程")
+
+    monkeypatch.setattr(detect_python.importlib.util, "find_spec",
+                        lambda name: None)
+    monkeypatch.setattr(detect_python.subprocess, "run", _must_not_spawn)
+
+
+def _simulate_unlaunchable(monkeypatch):
+    """模拟进程起不来:subprocess.run 抛 OSError。"""
+    monkeypatch.setattr(detect_python.subprocess, "run", _pylint_unlaunchable)
+
+
+def _pylint_installed() -> bool:
+    """pylint 是否真的可用(用于跳过依赖它的用例)。"""
+    try:
+        proc = subprocess.run([sys.executable, "-m", "pylint", "--version"],
+                              capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def _write_sample(directory, body: str) -> str:
+    path = os.path.join(directory, "sample.py")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(body)
+    return path
+
+
+def _rules(findings) -> set[str]:
+    return {f.rule for f in findings}
+
+
+# pylint 文本输出的一行。file 段带盘符时,老正则的 [^:]+ 会在 "C" 处断掉,
+# 整行匹配失败——pylint 的全部结果被静默丢弃,检测器对满是违规的文件报绿灯。
+_ABSOLUTE_LINE = (
+    r"C:\build\agent\sample.py:3:7: W0718: "
+    r"Catching too general exception Exception (broad-exception-caught)"
+)
+_RELATIVE_LINE = (
+    r"pylintdbg\sample.py:3:7: W0718: "
+    r"Catching too general exception Exception (broad-exception-caught)"
+)
+
+
+def test_parse_pylint_line_handles_relative_path():
+    """常规形态:pylint 把路径相对化后的输出要能解析。"""
+    finding = detect_python.parse_pylint_line(_RELATIVE_LINE)
+
+    assert finding is not None
+    assert finding.rule == "broad-except"
+    assert finding.file == r"pylintdbg\sample.py"
+    assert finding.line == 3
+
+
+def test_parse_pylint_line_handles_windows_drive_letter():
+    """跨盘扫描时 pylint 输出绝对路径,盘符里的冒号不能让它匹配失败。"""
+    finding = detect_python.parse_pylint_line(_ABSOLUTE_LINE)
+
+    assert finding is not None
+    assert finding.rule == "broad-except"
+    assert finding.file == r"C:\build\agent\sample.py"
+    assert finding.line == 3
+
+
+# pylint 不可用有两种真实形态,都必须回退到内置 AST:
+#   未安装   —— 这个解释器 import 不到 pylint(find_spec 为 None)
+#   起不来   —— 解释器缺失 / 超时,subprocess.run 抛 OSError
+_UNAVAILABLE = pytest.mark.parametrize(
+    "simulate_unavailable",
+    [_simulate_not_installed, _simulate_unlaunchable],
+    ids=["not-installed", "unlaunchable"],
+)
+
+
+@_UNAVAILABLE
+def test_pylint_unavailable_still_reports_line_too_long(tmp_path, monkeypatch,
+                                                        simulate_unavailable):
+    """pylint 不可用时,行宽必须仍由内置 AST 检出,不能静默漏报。"""
+    path = _write_sample(str(tmp_path), LONG_LINE + "\n")
+    simulate_unavailable(monkeypatch)
+
+    findings = detect_python.collect([path])
+
+    assert "line-too-long" in _rules(findings)
+
+
+@_UNAVAILABLE
+def test_pylint_unavailable_still_reports_ccn(tmp_path, monkeypatch, simulate_unavailable):
+    """回退路径的另一半:CCN 只有 AST 能算,同样不能丢。"""
+    path = _write_sample(str(tmp_path), BRANCHY)
+    simulate_unavailable(monkeypatch)
+
+    findings = detect_python.collect([path], ccn_threshold=2)
+
+    assert "ccn" in _rules(findings)
+
+
+@_UNAVAILABLE
+def test_pylint_unavailable_does_not_fabricate_pylint_only_rules(tmp_path,
+                                                                 monkeypatch,
+                                                                 simulate_unavailable):
+    """broad-except 只有 pylint 能判;回退时不该凭 AST 假装报得出来。
+
+    守住边界:修回退漏报的方式是让 AST 的行宽生效,不是把 pylint 专属规则
+    也造一份假结果。
+    """
+    path = _write_sample(str(tmp_path), BROAD_EXCEPT)
+    simulate_unavailable(monkeypatch)
+
+    findings = detect_python.collect([path])
+
+    assert "broad-except" not in _rules(findings)
+
+
+def test_pylint_available_reports_pylint_only_rules(tmp_path):
+    """对照用例:pylint 在时,它专属的规则确实能进来。
+
+    同时验证上面三个用例的夹具没写错——否则"回退漏报"可能是夹具问题。
+    """
+    if not _pylint_installed():
+        pytest.skip("pylint 未安装")
+    path = _write_sample(str(tmp_path), BROAD_EXCEPT)
+
+    findings = detect_python.collect([path])
+
+    assert "broad-except" in _rules(findings)
+
+
+def test_pylint_available_and_unavailable_agree_on_ast_rules(tmp_path, monkeypatch):
+    """两种模式下 AST 可判的规则集合必须一致——这正是 README 承诺的回退。"""
+    if not _pylint_installed():
+        pytest.skip("pylint 未安装")
+    path = _write_sample(str(tmp_path), LONG_LINE + "\n" + BRANCHY)
+
+    _simulate_not_installed(monkeypatch)
+    without_pylint = detect_python.collect([path], ccn_threshold=2)
+    monkeypatch.undo()
+    with_pylint = detect_python.collect([path], ccn_threshold=2)
+
+    ast_rules = {"line-too-long", "ccn"}
+    assert _rules(without_pylint) & ast_rules == _rules(with_pylint) & ast_rules
+    assert _rules(without_pylint) & ast_rules == ast_rules
+
+
+def test_collect_raises_when_no_python_files(tmp_path):
+    """没有 .py 文件时必须抛 NoSourceFiles,不能返回空列表。
+
+    空列表和"查过了,无违规"无法区分——路径打错会被门禁报成合规,
+    这是检测器最危险的一种静默通过。断言的是异常类型,不是消息文案。
+    """
+    (tmp_path / "notes.txt").write_text("not python", encoding="utf-8")
+
+    with pytest.raises(detect_python.NoSourceFiles):
+        detect_python.collect([str(tmp_path)])
+
+
+def test_unreadable_file_is_reported_not_dropped(tmp_path):
+    """读不了的文件要报 error,不能悄悄不计入。
+
+    返回空列表会让退出码停在 0,门禁把"没查"当成"查过了没问题"。
+    """
+    path = tmp_path / "locked.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    real_open = builtins.open
+
+    def _deny(target, *args, **kwargs):
+        if str(target) == str(path):
+            raise OSError("permission denied")
+        return real_open(target, *args, **kwargs)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(builtins, "open", _deny)
+    try:
+        findings = detect_python.collect([str(tmp_path)], use_pylint=False)
+    finally:
+        monkeypatch.undo()
+
+    assert "error" in _rules(findings)
+
+
+def test_syntax_error_file_is_reported_not_dropped(tmp_path):
+    """语法错误的文件要报 error。pylint 在时报 E0001,不在时只有 AST 能发现。"""
+    path = _write_sample(str(tmp_path), "def broken(:\n")
+
+    findings = detect_python.collect([path], use_pylint=False)
+
+    assert "error" in _rules(findings)
+
+
+def test_pylint_stdout_decoded_as_utf8(monkeypatch):
+    """pylint 的 stdout 必须按 UTF-8 解,不能沿用本地代码页。
+
+    pylint 在 duplicate-code(R0801) 报告里会回显源码行。按 cp936 解时,
+    源码里的 UTF-8 中文让读线程抛 UnicodeDecodeError、proc.stdout 变 None,
+    调用方随即 AttributeError 整个崩掉——实测扫含中文注释的 Python 项目必崩。
+    这里钉住 encoding / errors 两个参数,不真跑 pylint。
+    """
+    captured = {}
+
+    def _capture(*_args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(stdout="", returncode=0)
+
+    monkeypatch.setattr(detect_python.subprocess, "run", _capture)
+    detect_python.pylint_findings(["sample.py"], 120)
+
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+
+
+def test_main_returns_2_when_no_python_files(tmp_path):
+    """退出码 2 的契约:没查到任何文件不等于无违规。
+
+    finish() 把 NoSourceFiles 映射成 2;这条用例同时守住那个映射。
+    断言退出码本身,不断言 stderr 文本。
+    """
+    (tmp_path / "notes.txt").write_text("not python", encoding="utf-8")
+
+    assert detect_python.main([str(tmp_path)]) == 2

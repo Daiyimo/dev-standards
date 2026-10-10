@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""_common 的回归测试。
+
+守两条被三个检测器共用的地基:
+
+1. **read_source 的编码探测**。原来用 `encoding="utf-8", errors="replace"`
+   硬解,GBK 编码的中文每个字 2 字节都变成 U+FFFD,行宽按字符数一算就翻倍
+   (实测一条真实 94 字符的 C++ 行被判成 154 字符并报 line-too-long)。
+   `utf-8-sig` 顺带修掉带 BOM 的 Go 文件包注释漏检。
+2. **scan_lines 的行语义**。Go 与 C++ 检测器的函数区间、分组状态、
+   BackwardNull 全部由 depth_before / depth_after / code 派生,而它此前
+   一条测试都没有——连"字符串里的花括号不算深度"都没人守过。
+
+跑法: python -m pytest scripts/test_detect_common.py -q
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# pylint: disable=wrong-import-position
+import _common  # noqa: E402
+from _testhelpers import write_bytes, write_source  # noqa: E402
+
+
+def _depths(text: str, **kwargs) -> list[int]:
+    return [row["depth_after"] for row in _common.scan_lines(text, **kwargs)]
+
+
+# ---------------------------------------------------------------------------
+# read_source
+# ---------------------------------------------------------------------------
+
+def test_read_source_plain_utf8(tmp_path):
+    """UTF-8 无 BOM:原样解出,中文一个字符就是一个字符。"""
+    body = "// 中文注释\nx = 1\n"
+    path = write_source(tmp_path, "plain.py", body)
+
+    assert _common.read_source(path) == body
+
+
+def test_read_source_strips_bom(tmp_path):
+    """带 BOM 的文件要吃掉 BOM。
+
+    吃不掉时行首多一个 \\ufeff,它不是 Python 的空白字符、strip() 掉不了,
+    于是该行既不被判成注释行,`RE_PACKAGE` 也匹配不上——带 BOM 的 Go 文件
+    包注释因此漏检。
+    """
+    body = "// Package sample does things.\npackage sample\n"
+    path = write_source(tmp_path, "bom.go", body, encoding="utf-8-sig")
+
+    assert _common.read_source(path) == body
+
+
+def test_read_source_gbk_keeps_character_count(tmp_path):
+    """GBK 文件按 GBK 解,字符数和编辑器里看到的一致。
+
+    这是行宽"中文不按字节误判"的另一半:按字节计的 awk 会多出假阳性,
+    按 UTF-8 + errors="replace" 硬解同样会——GBK 中文每字 2 字节都变成
+    U+FFFD,长度按 1.6 倍左右膨胀。断言解码后的长度等于写入时的长度,
+    不依赖 120 阈值,因此不会因为阈值调整而失效。
+    """
+    text = "// " + "注释" * 35          # 72 个字符
+    path = write_source(tmp_path, "gbk.cpp", text, encoding="gbk")
+
+    decoded = _common.read_source(path)
+
+    assert len(decoded.rstrip("\n")) == len(text)
+
+
+def test_read_source_latin1_fallback_never_fails(tmp_path):
+    """既非 UTF-8 也非 GBK 时按 latin-1 兜底,永不抛异常。"""
+    path = write_bytes(tmp_path, "weird.bin", b"\xff\xfe\x00\x81")
+
+    assert isinstance(_common.read_source(path), str)
+
+
+# ---------------------------------------------------------------------------
+# scan_lines
+# ---------------------------------------------------------------------------
+
+def test_scan_lines_ignores_braces_inside_strings():
+    """字符串里的花括号不参与深度计数。
+
+    这条错了,Go/C++ 的函数区间、分组状态、BackwardNull 全线失真——
+    而它们全部由 depth_before / depth_after 派生。
+    """
+    text = 'var s = "{"\nfunc f() {\n}\n'
+
+    assert _depths(text) == [0, 1, 0]
+
+
+def test_scan_lines_separates_raw_and_code():
+    """raw 保留原文(行宽按它算),code 去掉注释与字符串内容。"""
+    rows = _common.scan_lines("int a; // { not a brace\n")
+
+    assert rows[0]["raw"] == "int a; // { not a brace"
+    assert rows[0]["code"] == "int a; "
+    assert rows[0]["depth_after"] == 0
+    assert rows[0]["is_comment"] is False
+
+
+def test_scan_lines_marks_full_line_comments():
+    """整行注释的 code 为空、is_comment 为真——文档注释判定靠这个。"""
+    rows = _common.scan_lines("// Package sample\n")
+
+    assert rows[0]["code"] == ""
+    assert rows[0]["is_comment"] is True
+
+
+def test_scan_lines_go_raw_string_spans_lines():
+    """Go 反引号裸字符串跨行延续,里面的 func 与花括号都不算。
+
+    detect_go 的 docstring 承诺"写在字符串或注释里的同名不算",靠的就是
+    这条状态延续;raw_strings=False(C/C++)时反引号不是字符串定界符。
+    """
+    text = "var s = `\nfunc NotAFunc() {\n}\n`\n"
+
+    go_rows = _common.scan_lines(text, raw_strings=True)
+    cpp_rows = _common.scan_lines(text, raw_strings=False)
+
+    assert all(row["code"].strip() == "" for row in go_rows[1:3])
+    # 裸串里的 { 与 } 都不进深度;raw_strings=False 时反引号不是定界符,
+    # 同一个文本在 C++ 侧会把 func 那一行的 { 算进去——两种口径都要钉住。
+    assert _depths(text, raw_strings=True) == [0, 0, 0, 0]
+    assert _depths(text, raw_strings=False) == [0, 1, 0, 0]
+    assert cpp_rows[1]["code"].strip().startswith("func NotAFunc")
+
+
+def test_scan_lines_block_comment_spans_lines():
+    """跨行块注释按状态延续,/* 之后的花括号同样不算。"""
+    text = "/*\n{\n*/\nvoid f() {\n}\n"
+
+    assert _depths(text, raw_strings=False) == [0, 0, 0, 1, 0]
+
+
+def test_scan_lines_does_not_expose_indent_field():
+    """indent 曾是死字段:每行都算,三个检测器没有一处读取。
+
+    留着一个没人读的键,下一个人会以为它有用、据此写判断。删掉比留着便宜。
+    """
+    rows = _common.scan_lines("    int a;\n")
+
+    assert "indent" not in rows[0]
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))

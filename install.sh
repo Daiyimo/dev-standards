@@ -31,7 +31,7 @@ if [ -n "${CLAUDE_SKILLS_SRC:-}" ]; then
   fi
   echo "==> 从本地源码同步:$CLAUDE_SKILLS_SRC -> $DEST"
   rm -rf "$DEST"   # 源码即权威,无需备份
-  mkdir -p "$SKILLS_DIR"
+  mkdir -p "$DEST"   # 必须重建目标本身:上面刚删掉,只建父目录会让 tar -C 失败
   ( cd "$CLAUDE_SKILLS_SRC" && tar --exclude=.git -cf - . ) | tar -xf - -C "$DEST"
 elif [ -d "$DEST/.git" ]; then
   if ! command -v git >/dev/null 2>&1; then

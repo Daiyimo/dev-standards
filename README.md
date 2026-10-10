@@ -16,27 +16,91 @@
 
 - 用户明确要求启用规范、完整合规检查、安全/性能审计或发布前检查。
 - 当前改动确实触及认证、授权、支付、真实隐私数据、密钥、破坏性迁移或公开不可信输入。
+- 用户给出项目路径要求按规范整理、弄合规、统一风格或过一遍扫描规范——此时走 `SKILL.md` 第 13 节执行层。
 
-除此之外不自动激活；不确定时默认不激活。
+除此之外不自动激活；不确定时默认不激活。仅给出项目路径而未要求合规时同样不激活。
 
 ## 文件结构
 
 ```text
 dev-standards/
-├── SKILL.md                    # 轻量主规则，功能优先
+├── SKILL.md                    # 轻量主规则，功能优先；第 13 节是执行层
 ├── README.md                   # 使用和安装说明
 ├── CHANGELOG.md                # 规范演进记录
 ├── install.sh                  # 一键安装 / 更新（幂等）
 ├── uninstall.sh                # 一键卸载
+├── scripts/                    # 第 13 节执行层的检测器（只检测，不修改代码）
+│   ├── detect.py               # 唯一入口，按语言分发并合并结果
+│   ├── _common.py              # 共用基础设施（Finding / report / 扫描器 / 读文件）
+│   ├── detect_python.py        # pylint 适配 + 内置 AST（行宽 / CCN），规则名归一化
+│   ├── detect_go.py            # Go 规则（包注释 / 导出符号 / 行宽 / 函数规模）
+│   ├── detect_cpp.py           # C/C++ 行宽 / 函数规模 / BackwardNull 候选
+│   ├── _testhelpers.py         # 测试共用的写入与断言助手
+│   └── test_detect_*.py        # 各层回归测试
 └── references/                 # 明确需要时才读取的资料库
     ├── process.md              # 生产可观测性、文档交付、分支/PR
     ├── context-md.md           # CONTEXT.md 与 ADR
     ├── methodology.md          # 调试、TDD、原型、架构体检、知识收尾
     ├── patterns.md             # 可选实现模式
-    └── lint-remediation.md     # 静态扫描告警的修复规范
+    ├── lint-remediation.md     # 静态扫描告警的修复规范（附录 D）
+    ├── standards-registry.md   # 规则注册表：阈值、检测方式、覆盖边界
+    └── ccn-splitting.md        # 高圈复杂度拆分手册、保真清单、差分测试
 ```
 
 参考文件不是自动生效的规范。不要在每次激活时全部读取，也不要因为参考中存在某种模式就自动把它加入项目。
+
+## 检测器
+
+第 13 节执行层的机械层。给它一个项目路径，它自己检测违规，不要求使用者先导出扫描报告；它只检测，不修改代码。
+
+```bash
+# 检测（自动判别 Python / Go / C++，混合栈会都跑一遍并合并结果）
+python scripts/detect.py /path/to/project
+
+# 只修某一类，修完复检这一类
+python scripts/detect.py --lang python --rules broad-except /path/to/project
+
+# 全量复检 + JSON
+python scripts/detect.py --json /path/to/project
+```
+
+退出码：`0` 无违规、`1` 有违规、`2` 自身出错（含路径下没有目标语言源文件——没查到任何文件不等于合规，门禁要靠这个区分）。明细输出每行一条 `<规则名>\t<文件>:<行>\t<说明>`。
+
+检测器自身有回归测试。测试盯的是“它不报真话”的路径（崩掉、静默跳过、误报），不是覆盖率数字——曾因两条静默漏报路径对满是违规的文件报绿灯：
+
+```bash
+python -m pytest scripts/ -q
+```
+
+### 各语言检测能力
+
+| 语言 | 覆盖的规则 | 边界 |
+| --- | --- | --- |
+| Python | `broad-except`、`line-too-long`、`unused-variable`、`unused-import`、`ccn` | 需要 pylint；装不上自动退回内置 AST 检测（只剩行宽 + CCN） |
+| Go | `golint/package`、`funccomment`、`structcomment`、`interfacecomment`、`varcomment`、`tosa/linelength`、`golint/fnsize` | 轻量行扫描器，假设代码经过 gofmt。项目有 golangci-lint / revive 时以它们为准 |
+| C/C++ | `tosa/linelength`、`golint/fnsize`、`BackwardNull` | `BackwardNull` 只报候选，已排除“判空后提前返回”这一安全惯用法，必须人工确认 |
+
+源文件编码按 UTF-8 → GBK → latin-1 顺序探测。按 UTF-8 硬解 + `errors="replace"` 会让 GBK 中文每字变成两个 U+FFFD、行宽翻倍——实测一条真实 94 字符的 C++ 行被判成 154 字符。
+
+### 已知边界
+
+- 规则样本覆盖 C++ / Go / Python 三个栈。其他语言（Java、JS/TS、Rust）的规则名与阈值未经验证，换栈时先反推该栈的扫描配置再套用方法。
+- CCN 检测是 Python AST 实现，只适用于 Python。
+- `detect_go.py` 不是 Go 解析器，是行扫描器；遇到非常规格式可能漏报。
+- `detect_cpp.py` 的 `BackwardNull` 是候选级，不能替代 clang-tidy 之类的分析器。
+- C++ 侧：单行函数体（`int f() { return 0; }`）不被识别、构造函数初始化列表的函数名取到最后一个初始化成员、多后缀签名（`const noexcept override`）漏检、fnsize 起点把函数上方的文档注释块算进去、嵌套成员函数与外层函数区间重叠时同一条报两遍。
+- `SKIP_DIRS` 里的 `build` / `dist` / `vendor` / `testdata` 被无提示跳过；源码放在这些目录下的项目会少扫一批文件而退出码不变。
+- Windows 下把输出重定向到文件或管道时，Python 按本地代码页编码（简体中文环境是 cp936），按 UTF-8 读会乱码，`--json` 尤其明显；直接看控制台不受影响（走 `WriteConsoleW`）。需要管道或落盘时设 `PYTHONIOENCODING=utf-8`，或先 `chcp 65001`。检测器读源文件不受此影响——它自己探测编码。
+
+### 已知缺陷（已复现，未修）
+
+当门禁用之前先知道这几条，它们都往“漏报 + 退出码 0”方向坏：
+
+- **项目够大时 pylint 起不来，三条规则静默丢失。** 文件列表一次性传给 pylint，Windows 上命令行长超过上限时抛 `WinError 206`，被当作“pylint 不可用”回退到内置 AST——实测 500 个文件、1000 处 `unused-import` 一条不报且退出码 0。触发条件是绝对路径 + 约 400 个以上文件；用相对路径跑同一项目正常。
+- **裸 `except:` 漏报。** `PYLINT_ALIASES` 没有 `bare-except`（W0702）， pylint 本身会报，归一化时被当成范围外规则丢掉。
+- **C++ raw string 破坏花括号深度。** 扫描器不识别 `R"(...)"`，字符串里的 `{` 被计入深度，实测报出 phantom 函数且真实函数区间被拉到 EOF。
+- **`str.splitlines()` 按 Unicode 边界断行。** 遇 0x0B、0x0C、0x1C、U+2028、U+2029 等字符会多断一行，其后所有行号偏移；pylint 用的 `specific_splitlines` 明确排除这些字符。
+- **`--rules <不存在的规则>` 返回 0**，把“筛掉之后没剩”和“本来没违规”混为一谈。
 
 ## 两种模式
 
@@ -100,6 +164,7 @@ curl -fsSL https://raw.githubusercontent.com/Daiyimo/dev-standards/main/uninstal
 
 - skill 本身不依赖 superpowers、subagent 或 Dynamic Workflow。
 - `install.sh` / `uninstall.sh` 使用 Bash；在线安装和更新需要 `git`、`curl`。
+- `scripts/` 检测器需要 Python 3.7+；`pylint` 可选——装上才覆盖 `broad-except` / `unused-*`，装不上自动退回内置 AST 检测（只剩行宽 + CCN），只有一行 stderr 提示。Go / C++ 检测器不依赖 Go 或 clang 工具链。
 
 ## 维护原则
 
@@ -107,8 +172,9 @@ curl -fsSL https://raw.githubusercontent.com/Daiyimo/dev-standards/main/uninstal
 - 主文件只保留高频决策规则；长方法和模式留在 `references/`。
 - 新规则必须说明它保护的真实功能或风险，不能只因为“最佳实践”就升级为默认强制项。
 - 修改规范意图时，在 `CHANGELOG.md` 记录原因。
+- `scripts/` 与 `references/` 的规则、阈值或检测能力变化同样记进 `CHANGELOG.md`；提交前跑一遍 `python -m pytest scripts/ -q` 和 `python scripts/detect.py .`。
 - 默认安装路径从 `origin/main` 拉取，本地源码的改动必须 commit + push 后才会对安装副本生效；不想先 push 就用 `CLAUDE_SKILLS_SRC` 从本地同步。
-- 发布前确认源码目录与实际安装副本的 `SKILL.md`、`references/` 保持一致。
+- 发布前确认源码目录与实际安装副本的 `SKILL.md`、`references/`、`scripts/` 保持一致。
 - 只装一处：不要在工作区里再放一份 `.claude/skills/dev-standards`，那会变成漂移源，出现"改了源码却没生效"。
 
 ## 灵感来源
