@@ -62,7 +62,19 @@ def report(findings: list[Finding], as_json: bool = False,
     明细走 stdout(可管道),聚合统计走 stderr(不污染可解析输出)。
     """
     if as_json:
-        print(json.dumps([f.as_dict() for f in findings], ensure_ascii=False, indent=2))
+        payload = json.dumps([f.as_dict() for f in findings],
+                             ensure_ascii=False, indent=2)
+        # JSON 是给机器读的,必须按 UTF-8 落盘。print() 在 Windows 上按本地代码页
+        # (简体中文环境 cp936)编码,重定向出的字节不是合法 UTF-8,消费端
+        # json.loads 直接 UnicodeDecodeError——比乱码更糟,管道整个断掉。
+        # 只改 JSON 这一条路:文本明细仍走 print(),GBK 控制台才显示得对。
+        # (2.1.3 明确判断过不强制把 stdout 全局改成 UTF-8,那是拿交互场景换管道场景。)
+        try:
+            sys.stdout.buffer.write(payload.encode("utf-8") + b"\n")
+            sys.stdout.buffer.flush()
+        except AttributeError:
+            # stdout 被换成没有 .buffer 的对象(测试替身、某些重定向环境)
+            print(payload)
         return 1 if findings else 0
 
     for f in sorted(findings, key=lambda x: (x.rule, x.file, x.line)):
@@ -127,7 +139,7 @@ def scan_lines(text: str, raw_strings: bool = True) -> list[dict]:
 
     raw_strings=False 时忽略反引号裸字符串(C/C++ 没有这个语法;Go 有)。
 
-    圈复杂度约 25,高于常规阈值但**不拆**:复杂度来自词法状态本身
+    圈复杂度约 26,高于常规阈值但**不拆**:复杂度来自词法状态本身
     (行注释 / 块注释 / 字符串 / 裸字符串 / 转义各一支),不是为了少写代码堆出来的。
     拆成多个函数只会让状态在函数间传递,比现在更难读,也不降低出错概率。
     """
@@ -136,7 +148,7 @@ def scan_lines(text: str, raw_strings: bool = True) -> list[dict]:
     in_block_comment = False
     in_raw_string = False
 
-    for raw in text.splitlines():
+    for raw in split_lines(text):
         code_chars: list[str] = []
         i, n = 0, len(raw)
         in_line_comment = False
@@ -214,6 +226,38 @@ def scan_lines(text: str, raw_strings: bool = True) -> list[dict]:
         row["depth_before"] = prev
         prev = row["depth_after"]
     return rows
+
+
+# 这些字符 `str.splitlines()` 也当成行尾,但 pylint 不认——源码里它们是合法内容
+# (换页符、行分隔符)。口径和 pylint 的 `specific_splitlines` 逐字对齐。
+_UNSPLIT_ENDS = {"\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"}
+
+
+def split_lines(text: str) -> list[str]:
+    """按行切分文本，行尾只认 `\\n` / `\\r` / `\\r\\n`。
+
+    不能用 `str.splitlines()`：它还会在 `\\x0b` `\\x0c` `\\x1c` `\\x1d` `\\x1e`
+    `\\x85` U+2028 U+2029 处断行。这些字符在源码里是合法内容，一旦出现就多数一行，
+    其后**所有行号整体偏移**——实测一条真实在第 3 行的 133 字符行被报到第 4 行，
+    而 pylint 报第 3 行。这里照抄 pylint `specific_splitlines` 的算法（先把
+    `splitlines(True)` 出来的、以上述字符结尾的行拼回下一行），两条路径的行号才一致。
+
+    与 pylint 的唯一差别：文本以未拼接字符结尾时，pylint 把残留 buffer 丢掉，这里
+    保留——多扫一行只是多一次检查，少一行可能静默漏报。
+
+    返回的行不含行尾符（`scan_lines` 的 `code` 不能带换行）。
+    """
+    res: list[str] = []
+    buffer = ""
+    for atomic in text.splitlines(True):
+        if atomic[-1] in _UNSPLIT_ENDS:
+            buffer += atomic
+        else:
+            res.append(buffer + atomic)
+            buffer = ""
+    if buffer:
+        res.append(buffer)
+    return [line.rstrip("\r\n") for line in res]
 
 
 def read_source(path: str) -> str:

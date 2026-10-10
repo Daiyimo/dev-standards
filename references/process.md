@@ -105,7 +105,7 @@
 
 ### 14.3 PR 规范
 
-- 标题格式:`<type>(<scope>): <subject>`（同提交规范 9.1）
+- 标题格式:`<type>(<scope>): <subject>`（提交信息格式遵循当前仓库约定，见 `SKILL.md` 第 10 节）
 - PR 描述必须包含:
   - 变更摘要（1-3 句）+ 关联 Issue（`Closes #123` / `Relates #123`）+ 测试说明 + UI 截图（UI 变更必附）
 - PR 合并前必须通过:pre-commit 全绿 + 全量测试通过 + 至少一轮 review

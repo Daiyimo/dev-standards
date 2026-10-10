@@ -1,13 +1,14 @@
 # 规范注册表
 
-> 本文件是资料库，也是**合并新规范的落点**。加一条规则在这里加一行；加一门语言见 `SKILL.md` 第 12 节。
+> 本文件是资料库，也是**合并新规范的落点**。加一条规则在这里加一行；加一门语言见 `scripts/detect.py` 的 docstring（新增 `detect_<lang>.py` 并在 `LANG_SUFFIXES` 登记后缀），不需要改主流程。
 > 所有阈值与规则名来自对真实扫描表的逐条统计，已脱敏：不含处理人、entityId、内部绝对路径与真实凭据。
 
 ## 1. 规则注册表
 
 | 规则名 | 语言 | 阈值 / 要求 | 检测方式 | 可靠度 |
 | --- | --- | --- | --- | --- |
-| `tosa/linelength` | 全部 | 单行 ≤ 120 字符 | `detect.py` 内置，按字符数计 | 可靠 |
+| `line-too-long` | Python | 单行 ≤ 120 字符 | pylint，按字符数计 | 可靠 |
+| `tosa/linelength` | Go / C++ | 单行 ≤ 120 字符 | `detect.py` 内置，按字符数计 | 可靠 |
 | `golint/fnsize` | Go / C++ | 函数体 ≤ 80 行（含注释与空行） | `detect.py` 内置 | Go 可靠；C++ 启发式 |
 | `broad-except` | Python | 不收裸 `Exception` | pylint（规则名已归一化） | 可靠 |
 | `unused-variable` | Python | 无只赋值不读取的变量 | pylint | 可靠 |
@@ -30,7 +31,7 @@
 | --- | --- | --- |
 | `detect_python.py` | 行宽、宽异常、未使用变量/导入、CCN | 依赖 pylint 已安装；装不上时自动退回内置 AST 检测（只剩行宽 + CCN）。缺 docstring 不在本规范范围内 |
 | `detect_go.py` | 包注释、导出符号注释、行宽、函数规模 | **轻量行扫描器，不是 Go 解析器**。假设代码经过 gofmt（声明与右花括号在行首）。不理解 struct tag、cgo、build tag 里的花括号。项目有 golangci-lint / revive 时以它们为准 |
-| `detect_cpp.py` | 行宽、函数规模、`BackwardNull` 候选 | 真正的空指针分析需要 clang-tidy。`BackwardNull` 只报"指针判空后在判空分支之外被解引用"这一种窄模式，**已排除"判空后提前返回"这一安全惯用法**，宁可漏报不误报 |
+| `detect_cpp.py` | 行宽、函数规模、`BackwardNull` 候选 | 真正的空指针分析需要 clang-tidy。`BackwardNull` 只报"指针判空后在判空分支之外被解引用"这一种窄模式，**已排除"判空后提前返回"这一安全惯用法**，宁可漏报不误报。**不识别 C++11 raw string `R"(...)"`**：字符串里的 `{` 会被计入花括号深度，实测报出 phantom 函数且真实函数区间被拉到 EOF |
 
 C/C++ 的函数规模检测按"函数签名首行到配套右花括号"计，能识别定义在命名空间或类内的函数（命名空间 / class / struct 体本身不算函数）。
 

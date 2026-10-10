@@ -270,6 +270,68 @@ def test_pylint_stdout_decoded_as_utf8(monkeypatch):
     assert captured["errors"] == "replace"
 
 
+BARE_EXCEPT = """\
+try:
+    pass
+except:
+    pass
+"""
+
+
+def test_bare_except_is_reported_as_broad_except(tmp_path):
+    """裸 `except:` 必须报出来——它是宽捕获里最宽的一种。
+
+    曾因 PYLINT_ALIASES 里没有 bare-except(W0702),样本里的裸 except 一条不报,
+    而同文件的 `except Exception` 正常报:最该报的那一类反而不报。pylint 本身是报的,
+    是归一化时被当成了"范围外规则"丢掉。
+    """
+    path = _write_sample(str(tmp_path), BARE_EXCEPT)
+
+    findings = detect_python.collect([path])
+
+    assert "broad-except" in _rules(findings)
+
+
+def test_path_batches_never_drop_a_file(monkeypatch):
+    """文件多到命令行超长时必须分批,且一个文件都不能少。
+
+    Windows CreateProcess 上限 32767 字符。曾一次性把全部路径传给 pylint,项目够大时
+    抛 WinError 206,被当成"pylint 不可用"退回 AST——broad-except / unused-variable /
+    unused-import 三条规则静默丢失,退出码还是 0。实测 500 文件 + 深路径(命令行总长
+    36247)→ 0 条明细、退出码 0;同一项目用相对路径(32747)→ 1000 条、退出码 1。
+    所以判据是命令行总长,不是文件数——路径深时两百多个文件就触发。
+    """
+    monkeypatch.setattr(detect_python, "_CMDLINE_BUDGET", 120)
+    base = ["python", "-m", "pylint"]
+    paths = [f"C:/deep/directory/module_{i:03d}.py" for i in range(30)]
+
+    batches = detect_python._path_batches(paths, base)
+
+    assert [p for batch in batches for p in batch] == paths
+    assert len(batches) > 1
+    for batch in batches:
+        # 只有"单条路径就超预算"才允许突破预算,那时让 pylint 自己报错
+        assert len(batch) == 1 or detect_python._cmdline_len(base + batch) <= 120
+
+
+def test_path_batches_single_oversized_path_still_emitted():
+    """单条路径就超预算时单独成批——让 pylint 自己报错,比静默丢文件好。"""
+    base = ["python", "-m", "pylint"]
+    huge = "C:/" + "x" * 40000 + ".py"
+
+    assert detect_python._path_batches([huge], base) == [[huge]]
+
+
+def test_default_cmdline_budget_is_below_windows_limit():
+    """默认预算必须低于 Windows 的 32767 字符上限,否则分批形同虚设。
+
+    上面那条把 _CMDLINE_BUDGET  monkeypatch 小了测分批逻辑,这条守**默认值**——
+    默认值一旦被调到上限之上,_path_batches 永远返回单批,WinError 206 立刻复发,
+    而分批逻辑的测试一条都不会红。
+    """
+    assert 0 < detect_python._CMDLINE_BUDGET < 32767
+
+
 def test_main_returns_2_when_no_python_files(tmp_path):
     """退出码 2 的契约:没查到任何文件不等于无违规。
 

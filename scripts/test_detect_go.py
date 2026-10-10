@@ -149,6 +149,65 @@ def test_collect_raises_when_no_go_files(tmp_path):
         detect_go.collect([str(tmp_path)])
 
 
+TOP_LEVEL_INTERFACE = """package sample
+
+type TopIface interface {
+    Do()
+}
+
+type TopStruct struct {
+    A int
+}
+"""
+
+
+def test_top_level_interface_uses_interfacecomment(tmp_path):
+    """顶层 type 也分 interface 与 struct,规则名不能串。
+
+    曾在这里硬编码 structcomment,于是顶层接口全被报成 structcomment,而
+    `--rules golint/interfacecomment` 一条都筛不到——registry 把两条当成独立
+    规则列了两行,门禁按规则名筛时静默少一批。分组内的判据本来是对的,顶层漏了。
+    """
+    path = write_source(tmp_path, "iface.go", TOP_LEVEL_INTERFACE)
+
+    findings = detect_go.collect([path])
+
+    assert rules_of(findings) >= {"golint/interfacecomment", "golint/structcomment"}
+    iface = [f for f in findings if f.rule == "golint/interfacecomment"]
+    assert [f.line for f in iface] == [3]
+    assert "TopIface" in iface[0].message
+
+
+TOP_LEVEL_INTERFACE = """\
+package sample
+
+type TopIface interface {
+    Do()
+}
+
+type TopStruct struct {
+    A int
+}
+"""
+
+
+def test_top_level_interface_uses_interfacecomment(tmp_path):
+    """顶层 type 也分 interface 与 struct,规则名不能串。
+
+    曾在这里硬编码 structcomment,于是顶层接口全被报成 structcomment,而
+    `--rules golint/interfacecomment` 一条都筛不到——registry 把两条当成独立
+    规则列了两行,门禁按规则名筛时静默少一批。分组内的判据本来是对的,顶层漏了。
+    """
+    path = write_source(tmp_path, "iface.go", TOP_LEVEL_INTERFACE)
+
+    findings = detect_go.collect([path])
+
+    assert rules_of(findings) >= {"golint/interfacecomment", "golint/structcomment"}
+    iface = [f for f in findings if f.rule == "golint/interfacecomment"]
+    assert [f.line for f in iface] == [3]
+    assert "TopIface" in iface[0].message
+
+
 def test_main_returns_2_when_no_go_files(tmp_path):
     """退出码 2 的契约:没查到任何文件不等于无违规。"""
     (tmp_path / "notes.txt").write_text("not go", encoding="utf-8")

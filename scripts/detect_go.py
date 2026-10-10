@@ -105,6 +105,26 @@ def _group_spec_finding(group_kind: str, code: str, stripped: str,
     return _doc_comment_finding(rule, kind, name, rows, idx, path)
 
 
+def _func_size_finding(rows: list[dict], idx: int, name: str, path: str,
+                       max_func: int) -> Finding | None:
+    """函数规模:签名首行到右花括号回到深度 0 的那一行。
+
+    单独一个函数,不内联进 _declaration_findings:那段把后者的圈复杂度顶到了
+    阈值(实测 20),而"这个函数几行"本来就是一个独立问题。2.1.0 拆
+    detect_file 时也是同样理由。
+    """
+    end = idx
+    while end < len(rows) and rows[end]["depth_after"] != 0:
+        end += 1
+    size = (end - idx) + 1
+    if size > max_func:
+        return Finding(
+            "golint/fnsize", path, idx + 1,
+            f"函数 {name} 的行数是 {size},规范设定值为 {max_func}",
+        )
+    return None
+
+
 def _declaration_findings(rows: list[dict], path: str, max_func: int) -> list[Finding]:
     """顶层与分组内的导出符号注释,以及函数规模。"""
     out: list[Finding] = []
@@ -113,7 +133,6 @@ def _declaration_findings(rows: list[dict], path: str, max_func: int) -> list[Fi
     for idx, row in enumerate(rows):
         code = row["code"]
         stripped = code.strip()
-        lineno = idx + 1
 
         # 分组块内部。注意:var/const/type 用圆括号分组,不增加花括号深度,
         # 所以分组内的 spec 仍在 depth_before == 0。
@@ -146,22 +165,22 @@ def _declaration_findings(rows: list[dict], path: str, max_func: int) -> list[Fi
                 "golint/funccomment", "函数", name, rows, idx, path)
             if finding:
                 out.append(finding)
-            # 函数规模:首行到右花括号回到深度 0 的那一行
-            end = idx
-            while end < len(rows) and rows[end]["depth_after"] != 0:
-                end += 1
-            size = (end - idx) + 1
-            if size > max_func:
-                out.append(Finding(
-                    "golint/fnsize", path, lineno,
-                    f"函数 {name} 的行数是 {size},规范设定值为 {max_func}",
-                ))
+            size_finding = _func_size_finding(rows, idx, name, path, max_func)
+            if size_finding:
+                out.append(size_finding)
             continue
 
         type_match = RE_TYPE.match(code)
         if type_match:
+            # 和 _group_spec_finding 用同一套判据:顶层 type 也分 interface 与
+            # struct。曾在这里硬编码 structcomment,于是顶层接口全被报成
+            # structcomment,而 `--rules golint/interfacecomment` 一条都筛不到——
+            # registry 把两条当成独立规则列了两行,门禁按规则名筛时静默少一批。
+            is_iface = "interface" in stripped
             finding = _doc_comment_finding(
-                "golint/structcomment", "类型", type_match.group(1), rows, idx, path)
+                "golint/interfacecomment" if is_iface else "golint/structcomment",
+                "接口" if is_iface else "类型",
+                type_match.group(1), rows, idx, path)
             if finding:
                 out.append(finding)
             continue

@@ -36,6 +36,15 @@ LANG_SUFFIXES = {
     "cpp": (".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".inl"),
 }
 
+# 规范规则名全集,与 references/standards-registry.md 第 1 节一致。
+# `error` 是检测器自报的"读不了/解析失败",不是某条规范,但同样可筛。
+KNOWN_RULES = {
+    "line-too-long", "tosa/linelength", "broad-except", "unused-variable",
+    "unused-import", "ccn", "golint/package", "golint/funccomment",
+    "golint/structcomment", "golint/interfacecomment", "golint/varcomment",
+    "golint/fnsize", "BackwardNull", "error",
+}
+
 
 
 def detect_languages(paths: list[str]) -> list[str]:
@@ -83,6 +92,16 @@ def main(argv: list[str] | None = None) -> int:
         langs = [args.lang]
 
     wanted = {r.strip() for r in args.rules.split(",") if r.strip()}
+    # 规则名打错必须报自身错误。否则"筛掉之后没剩"和"本来没违规"返回同一个 0,
+    # 第 13 节第 4 步"修完复检这一类"会因一个拼写错误变成假绿——和
+    # NoSourceFiles 要防的是同一类静默通过,只是触发条件从路径打错换成规则名打错。
+    unknown = wanted - KNOWN_RULES
+    if unknown:
+        print("detect: 未知规则名 " + ", ".join(sorted(unknown)) +
+              ";可用规则名见 references/standards-registry.md 第 1 节",
+              file=sys.stderr)
+        return 2
+
     findings = []
     for lang in langs:
         module = __import__(f"detect_{lang}")

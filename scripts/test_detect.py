@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""detect.py 入口的回归测试。
+
+这个文件补的是**入口层**契约,此前四个 test_detect_*.py 没有一个 import detect:
+auto 语言判别、--rules 过滤、--rules 传错规则名、--json 的编码、退出码 2 的映射
+全部裸奔。实测把 detect_languages 改成恒返回 []、把 --rules 过滤整段删掉,41 条
+测试照样全绿——入口是唯一被测代码够不着的一层。
+
+跑法: python -m pytest scripts/test_detect.py -q
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# pylint: disable=wrong-import-position
+import _common  # noqa: E402
+import detect  # noqa: E402
+from _common import Finding  # noqa: E402
+from _testhelpers import write_source  # noqa: E402
+
+
+class _FakeStdout:
+    """只有 .buffer 和 write 的 stdout 替身,用来接 report() 的输出。"""
+
+    def __init__(self) -> None:
+        self.buffer = io.BytesIO()
+        self.written: list[str] = []
+
+    def write(self, text: str) -> int:
+        self.written.append(text)
+        return len(text)
+
+
+VIOLATING_PY = """\
+try:
+    pass
+except Exception:
+    pass
+"""
+
+
+def test_unknown_rule_name_returns_2(tmp_path):
+    """--rules 传了规则表外的名字必须报自身错误。
+
+    曾返回 0:"筛掉之后没剩"和"本来没违规"是同一个退出码,第 13 节第 4 步
+    "修完复检这一类"会因一个拼写错误变成假绿。和 NoSourceFiles 要防的是同一类
+    静默通过,只是触发条件从路径打错换成规则名打错。
+    """
+    write_source(tmp_path, "a.py", VIOLATING_PY)
+
+    assert detect.main(["--rules", "no-such-rule", str(tmp_path)]) == 2
+
+
+def test_known_rule_name_still_filters(tmp_path):
+    """规则名正确时过滤照旧工作,不会因上面那条校验被误伤。"""
+    write_source(tmp_path, "a.py", VIOLATING_PY)
+
+    assert detect.main(["--rules", "broad-except", str(tmp_path)]) == 1
+    assert detect.main(["--rules", "ccn", str(tmp_path)]) == 0
+
+
+def test_known_rules_matches_registry():
+    """KNOWN_RULES 要和 references/standards-registry.md 第 1 节对得上。
+
+    校验用的是这份集合;它和注册表漂移时,--rules 会把合法规则名判成非法。
+    """
+    registry = os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "references", "standards-registry.md"))
+    if not os.path.exists(registry):               # 从别处跑测试时跳过
+        pytest.skip("找不到 standards-registry.md")
+    with open(registry, encoding="utf-8") as handle:
+        text = handle.read()
+    table = text.split("## 1. 规则注册表")[1].split("##")[0]
+    listed = {line.split("`")[1] for line in table.splitlines()
+              if line.startswith("| `")}
+
+    assert listed <= detect.KNOWN_RULES, listed - detect.KNOWN_RULES
+
+
+def test_auto_mode_returns_2_when_no_source_files(tmp_path):
+    """auto 模式没找到源文件时返回 2,不是 0。
+
+    这条契约此前只有三个语言检测器各自守着,detect.py 这一层没有。
+    """
+    (tmp_path / "notes.txt").write_text("not source", encoding="utf-8")
+
+    assert detect.main([str(tmp_path)]) == 2
+
+
+def test_json_output_is_utf8_regardless_of_stdout_encoding(monkeypatch):
+    """JSON 必须按 UTF-8 落盘,不能随 stdout 的本地代码页。
+
+    print() 在简体中文 Windows 上按 cp936 编码,重定向出的字节不是合法 UTF-8,
+    消费端 json.loads 直接 UnicodeDecodeError——比乱码更糟,管道整个断掉。
+    只修 JSON 这一条路:文本明细仍走 print(),GBK 控制台才显示得对。
+    """
+    fake = _FakeStdout()
+    monkeypatch.setattr(sys, "stdout", fake)
+
+    _common.report([Finding("golint/fnsize", "a.cpp", 1, "函数 big 的行数是 88")],
+                   as_json=True)
+
+    raw = fake.buffer.getvalue()
+    payload = json.loads(raw.decode("utf-8"))
+    assert payload[0]["message"] == "函数 big 的行数是 88"
+    assert raw.endswith(b"\n")
+
+
+def test_text_output_does_not_touch_stdout_buffer(monkeypatch):
+    """文本明细仍走 print(),不写 .buffer——GBK 控制台的显示不能被打断。"""
+    fake = _FakeStdout()
+    monkeypatch.setattr(sys, "stdout", fake)
+
+    _common.report([Finding("golint/fnsize", "a.cpp", 1, "函数 big 的行数是 88")],
+                   as_json=False)
+
+    assert fake.buffer.getvalue() == b""
+    assert fake.written, "文本明细没走 print()"
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))

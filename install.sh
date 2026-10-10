@@ -58,4 +58,4 @@ else
 fi
 
 echo "完成。dev-standards 已就绪:$DEST"
-echo "重启 Claude Code,或在对话中说「启动规范」即可激活。"
+echo "重启 Claude Code,或在对话中说「启用规范」即可激活。"

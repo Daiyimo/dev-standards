@@ -28,13 +28,17 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from _common import (Finding, NoSourceFiles, collect_files,  # noqa: E402
-                     finish, read_source)
+                     finish, read_source, split_lines)
 
 # ---------------------------------------------------------------------------
 # 规范口径的规则名 -> pylint 各版本可能的消息 ID / 符号名
 # ---------------------------------------------------------------------------
 PYLINT_ALIASES = {
-    "broad-except": {"broad-except", "broad-exception-caught", "W0703", "W0718"},
+    # bare-except(W0702) 并进 broad-except:裸 `except:` 是宽捕获里最宽的一种,
+    # 漏掉它等于最该报的那一类反而不报。曾因别名表里没有它,样本里的裸 except
+    # 一条不报而 `except Exception` 正常报。
+    "broad-except": {"broad-except", "broad-exception-caught", "W0703", "W0718",
+                     "bare-except", "W0702"},
     "line-too-long": {"line-too-long", "C0301"},
     "unused-variable": {"unused-variable", "W0612"},
     "unused-import": {"unused-import", "W0611"},
@@ -104,7 +108,7 @@ def ast_findings(path: str, max_line: int, ccn_threshold: int) -> list[Finding]:
 
     out: list[Finding] = []
     # 行宽按字符数,不用按字节计数的工具(UTF-8 中文占 3 字节会误判)。
-    for lineno, line in enumerate(source.splitlines(), start=1):
+    for lineno, line in enumerate(split_lines(source), start=1):
         if len(line) > max_line:
             out.append(Finding(
                 "line-too-long", path, lineno,
@@ -174,9 +178,12 @@ def pylint_findings(paths: list[str], max_line: int) -> list[Finding] | None:
     不能返回空列表——那和"pylint 跑通且无违规"无法区分,调用方便不会回退,
     AST 的行宽结果会被整批过滤掉,只剩 CCN(曾因此静默漏报)。
 
-    `--dummy-variables-rgx=^_+$` 是**显式钉住** pylint 4.1.2 的默认值
-    (实测 `--generate-rcfile` 输出就是这个)。目的是防止未来版本把默认值改成
-    宽泛模式后,`unused_xxx` 之类的死代码被静默跳过。
+    `--dummy-variables-rgx=^_+$` 比 pylint 4.1.2 的真实默认值更严。默认值是
+    `_+$|(_[a-zA-Z0-9_]*[a-zA-Z0-9]+?$)|dummy|^ignored_|^unused_`,也就是说
+    pylint 默认放过了 `_unused` / `_idx` 这类名字;这里只认纯下划线名是"故意未使用",
+    于是它们也会被报出来。代价:检测器可能比项目自己的 pylint 配置多报几条,两边
+    条数对不上时先查这一条。(此前这里写的是"显式钉住 pylint 4.1.2 的默认值",
+    实测不成立——默认值不是这个,那段依据是错的。)
 
     `encoding="utf-8", errors="replace"` 不能省。pylint 在 duplicate-code
     (R0801) 报告里会**回显源码行**;默认按本地代码页解码时(简体中文 Windows 是
@@ -192,29 +199,63 @@ def pylint_findings(paths: list[str], max_line: int) -> list[Finding] | None:
         print("detect_python: pylint 未安装,改用内置 AST 检测", file=sys.stderr)
         return None
 
-    cmd = [
+    base_cmd = [
         sys.executable, "-m", "pylint",
         "--max-line-length", str(max_line),
         "--dummy-variables-rgx", "^_+$",
         "--disable", "missing-module-docstring,missing-function-docstring,"
                      "missing-class-docstring,invalid-name",
         "--output-format", "text",
-        *paths,
     ]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=300)
-    except (OSError, subprocess.SubprocessError) as exc:
-        print(f"detect_python: pylint 不可用({exc}),改用内置 AST 检测", file=sys.stderr)
-        return None
 
     out: list[Finding] = []
-    for raw in proc.stdout.splitlines():
-        finding = parse_pylint_line(raw)
-        if finding is not None:
-            out.append(finding)
+    for batch in _path_batches(paths, base_cmd):
+        try:
+            proc = subprocess.run(base_cmd + batch, capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace",
+                                  timeout=300)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"detect_python: pylint 不可用({exc}),改用内置 AST 检测",
+                  file=sys.stderr)
+            return None
+        for raw in split_lines(proc.stdout):
+            finding = parse_pylint_line(raw)
+            if finding is not None:
+                out.append(finding)
 
     return out
+
+
+# Windows CreateProcess 的命令行上限是 32767 字符。一次性把全部文件路径传给
+# pylint,项目够大时抛 WinError 206,被下面当成"pylint 不可用"退回 AST ——
+# broad-except / unused-variable / unused-import 三条规则静默丢失,退出码还是 0。
+# 实测:500 文件 + 深路径(总长 36247)→ 0 条明细、退出码 0;同一项目用相对路径
+# (总长 32747)→ 1000 条、退出码 1。所以判据是命令行总长,不是文件数。
+_CMDLINE_BUDGET = 30000
+
+
+def _cmdline_len(cmd: list[str]) -> int:
+    """粗略估算命令行字符数。每项按"内容 + 一对引号 + 一个空格"算,宁可估高。"""
+    return sum(len(part) + 3 for part in cmd)
+
+
+def _path_batches(paths: list[str], base_cmd: list[str]) -> list[list[str]]:
+    """把文件路径切成不超过 _CMDLINE_BUDGET 的若干批。
+
+    单个路径就超预算时单独成批(让 pylint 自己报错,比这里静默丢文件好)。
+    """
+    batches: list[list[str]] = []
+    current: list[str] = []
+    for path in paths:
+        candidate = current + [path]
+        if current and _cmdline_len(base_cmd + candidate) > _CMDLINE_BUDGET:
+            batches.append(current)
+            current = [path]
+        else:
+            current = candidate
+    if current:
+        batches.append(current)
+    return batches
 
 
 # ---------------------------------------------------------------------------

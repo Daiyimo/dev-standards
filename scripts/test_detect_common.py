@@ -139,6 +139,55 @@ def test_scan_lines_block_comment_spans_lines():
     assert _depths(text, raw_strings=False) == [0, 0, 0, 1, 0]
 
 
+def test_split_lines_only_breaks_on_cr_lf():
+    """split_lines 只认 \n / \r / \r\n 为行尾。
+
+    曾用 str.splitlines():它还会在 0x0B / 0x0C / 0x1C / U+2028 处断行,于是一条
+    真实在第 3 行的 133 字符行被报到第 4 行,而 pylint 报第 3 行——整份报告的行号
+    全部偏移,修告警的人会改到错的代码上。口径照抄 pylint 的 specific_splitlines。
+    """
+    text = "a\n\x0cb\nc\nd"
+
+    assert _common.split_lines(text) == ["a", "\x0cb", "c", "d"]
+
+
+def test_split_lines_keeps_trailing_line_count():
+    """文本以换行结尾时不多出一个空行。
+
+    这是行号的基础:多一个空元素,scan_lines 的行数就比编辑器多一行,Go 的 fnsize
+    区间会直接扫到 EOF。用 re.split 实现时踩过这个坑。
+    """
+    assert _common.split_lines("a\nb\n") == ["a", "b"]
+    assert _common.split_lines("a\nb") == ["a", "b"]
+
+
+def test_split_lines_matches_pylint_specific_splitlines():
+    """和 pylint 的实现逐字对齐——两条路径的行号必须一致。"""
+    from pylint.checkers.format import FormatChecker
+
+    for text in ("a\n\x0cb\nc\n", "a\rb\r\nc", "x\x0cy\x0cz",
+                 "a\n\n\nb", "\u2028a\nb"):
+        assert _common.split_lines(text) == [
+            line.rstrip("\r\n")
+            for line in FormatChecker.specific_splitlines(text)
+        ], repr(text)
+
+
+def test_scan_lines_row_count_not_inflated_by_form_feed():
+    """0x0C 不能让 scan_lines 多出一行——行号是全报告的地基。
+
+    上面几条直接测 split_lines,这条测**调用方真的用了它**。曾把 scan_lines 里的
+    split_lines(text) 换回 text.splitlines(),上面几条照样全绿,而真实文件里一条
+    第 3 行的告警被报到第 4 行——修告警的人会改到错的代码上。
+    """
+    text = "int a;\n\x0cint b;\nint c;\n"
+
+    rows = _common.scan_lines(text)
+
+    assert len(rows) == 3
+    assert rows[2]["code"].strip() == "int c;"
+
+
 def test_scan_lines_does_not_expose_indent_field():
     """indent 曾是死字段:每行都算,三个检测器没有一处读取。
 

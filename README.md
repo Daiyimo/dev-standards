@@ -64,7 +64,7 @@ python scripts/detect.py --lang python --rules broad-except /path/to/project
 python scripts/detect.py --json /path/to/project
 ```
 
-退出码：`0` 无违规、`1` 有违规、`2` 自身出错（含路径下没有目标语言源文件——没查到任何文件不等于合规，门禁要靠这个区分）。明细输出每行一条 `<规则名>\t<文件>:<行>\t<说明>`。
+退出码：`0` 无违规、`1` 有违规、`2` 自身出错。返回 2 的情形有三种——路径下没有目标语言源文件（没查到任何文件不等于合规，门禁要靠这个区分）、`--rules` 传了规则表外的名字、检测器自身抛异常。明细输出每行一条 `<规则名>\t<文件>:<行>\t<说明>`。
 
 检测器自身有回归测试。测试盯的是“它不报真话”的路径（崩掉、静默跳过、误报），不是覆盖率数字——曾因两条静默漏报路径对满是违规的文件报绿灯：
 
@@ -94,13 +94,12 @@ python -m pytest scripts/ -q
 
 ### 已知缺陷（已复现，未修）
 
-当门禁用之前先知道这几条，它们都往“漏报 + 退出码 0”方向坏：
+当门禁用之前先知道这几条，它们都往“漏报 + 退出码不变”方向坏：
 
-- **项目够大时 pylint 起不来，三条规则静默丢失。** 文件列表一次性传给 pylint，Windows 上命令行长超过上限时抛 `WinError 206`，被当作“pylint 不可用”回退到内置 AST——实测 500 个文件、1000 处 `unused-import` 一条不报且退出码 0。触发条件是绝对路径 + 约 400 个以上文件；用相对路径跑同一项目正常。
-- **裸 `except:` 漏报。** `PYLINT_ALIASES` 没有 `bare-except`（W0702）， pylint 本身会报，归一化时被当成范围外规则丢掉。
-- **C++ raw string 破坏花括号深度。** 扫描器不识别 `R"(...)"`，字符串里的 `{` 被计入深度，实测报出 phantom 函数且真实函数区间被拉到 EOF。
-- **`str.splitlines()` 按 Unicode 边界断行。** 遇 0x0B、0x0C、0x1C、U+2028、U+2029 等字符会多断一行，其后所有行号偏移；pylint 用的 `specific_splitlines` 明确排除这些字符。
-- **`--rules <不存在的规则>` 返回 0**，把“筛掉之后没剩”和“本来没违规”混为一谈。
+- **C++ raw string 破坏花括号深度。** 扫描器不识别 C++11 的 `R"(...)"`，字符串里的 `{` 被计入深度，实测报出 phantom 函数（函数名来自字符串内部）且真实函数区间被拉到 EOF。修它要改 `_common.scan_lines` 的词法状态机，而那套状态机同时服务 Go 与 C++，改动面大于其余几条，故留待单独一次整改。
+- **`SKIP_DIRS` 被无提示跳过。** `build` / `dist` / `vendor` / `testdata` 等目录下的源文件不扫，退出码不变——和上面那条是同一种坏法（少查一批文件而门禁看不出），只是触发条件是目录名而不是文件内容。
+
+已修（曾经的已知缺陷，修复均有测试守住，回退即变红）：pylint 分批（Windows 命令行超长时曾静默丢三条规则且退出码 0）、裸 `except:` 漏报、`str.splitlines()` 断行偏移、`--rules` 传不存在规则名返回 0、`--json` 重定向后不是 UTF-8、顶层 Go 接口被报成 `structcomment`。
 
 ## 两种模式
 
@@ -109,7 +108,7 @@ python -m pytest scripts/ -q
 
 ## 安装 / 更新 / 卸载
 
-> 安装脚本需要 `git`，可在 macOS、Linux 和 Windows Git Bash 中使用。默认安装到用户级 `~/.claude/skills/dev-standards/`。
+> 在线安装与更新需要 `git` 和 `curl`；从本地源码同步（`CLAUDE_SKILLS_SRC`）两者都不需要。脚本可在 macOS、Linux 和 Windows Git Bash 中使用。默认安装到用户级 `~/.claude/skills/dev-standards/`。
 
 ### 一句话安装（也是更新命令）
 
@@ -172,7 +171,7 @@ curl -fsSL https://raw.githubusercontent.com/Daiyimo/dev-standards/main/uninstal
 - 主文件只保留高频决策规则；长方法和模式留在 `references/`。
 - 新规则必须说明它保护的真实功能或风险，不能只因为“最佳实践”就升级为默认强制项。
 - 修改规范意图时，在 `CHANGELOG.md` 记录原因。
-- `scripts/` 与 `references/` 的规则、阈值或检测能力变化同样记进 `CHANGELOG.md`；提交前跑一遍 `python -m pytest scripts/ -q` 和 `python scripts/detect.py .`。
+- `scripts/` 与 `references/` 的规则、阈值或检测能力变化同样记进 `CHANGELOG.md`；提交前跑一遍 `python -m pytest scripts/ -q` 和 `python scripts/detect.py .`。后者在本仓库**不要求归零**——自扫固定有 1 处 `ccn`（`scripts/_common.py` 的 `scan_lines`，圈复杂度 26，docstring 里声明有意不拆），退出码 1 是预期结果；要盯的是“改动前后计数一致、没有新增规则类别”。
 - 默认安装路径从 `origin/main` 拉取，本地源码的改动必须 commit + push 后才会对安装副本生效；不想先 push 就用 `CLAUDE_SKILLS_SRC` 从本地同步。
 - 发布前确认源码目录与实际安装副本的 `SKILL.md`、`references/`、`scripts/` 保持一致。
 - 只装一处：不要在工作区里再放一份 `.claude/skills/dev-standards`，那会变成漂移源，出现"改了源码却没生效"。
