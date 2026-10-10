@@ -32,7 +32,8 @@ dev-standards/
     ├── process.md              # 生产可观测性、文档交付、分支/PR
     ├── context-md.md           # CONTEXT.md 与 ADR
     ├── methodology.md          # 调试、TDD、原型、架构体检、知识收尾
-    └── patterns.md             # 可选实现模式
+    ├── patterns.md             # 可选实现模式
+    └── lint-remediation.md     # 静态扫描告警的修复规范
 ```
 
 参考文件不是自动生效的规范。不要在每次激活时全部读取，也不要因为参考中存在某种模式就自动把它加入项目。
