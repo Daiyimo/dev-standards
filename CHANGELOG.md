@@ -11,6 +11,8 @@
 
 ## [2.1.0] — 2026-10-12
 
+> 本版本是四轮工作的汇总：合并 `code-standards-remediation` skill、三轮缺陷整改、一轮广谱变异扫描。条目里的测试条数是**该条目落地当时**的数字；发布时回归测试共 104 条，五轮变异验证（6/6、18/18、13/13、46/46、3/3）全绿。
+
 ### Added
 
 - **第二轮复核补上 19 条回归测试（56 → 75 条）**，全部对准“删掉没人发现”的点。第一轮留下的 5 条无测试规则这次补齐：`unused-variable`、`unused-import`、`golint/package`、Go 与 C++ 各自的 `golint/fnsize`——此前把整条规则关掉，56 条测试照样全绿。另补：`_own_complexity` 的基数 1（此前没有任何用例断言过具体 CCN 数值）、Go `type (...)` 分组块整支、Go 分组关闭侧的 depth 门槛、C++ `close < fend` 夹紧、`split_lines` 的另外两个调用点（AST 行宽与 pylint 输出解析）、`--max-line-length` 是否真传给 pylint、`skip_dirs=set()` 语义。
