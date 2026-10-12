@@ -326,5 +326,58 @@ def test_empty_skip_dirs_means_skip_nothing(tmp_path):
     assert any(f.endswith("gen.py") for f in found)
 
 
+def test_deeply_nested_sources_in_skipped_dir_are_reported(tmp_path, capsys):
+    """**嵌套**在被跳过目录里的源文件也必须提示。
+
+    只查本层时这条提示基本白写——Go 的 vendor/、Java 的 build/ 里源码本来就是
+    嵌套的。改为有预算地向下探查后，深层也能发现。
+    """
+    nested = tmp_path / "vendor" / "deep" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "lib.go").write_text("package x\n", encoding="utf-8")
+    (tmp_path / "a.py").write_text("import sys\n", encoding="utf-8")
+
+    _common.collect_files([str(tmp_path)], (".py", ".go"))
+
+    err = capsys.readouterr().err
+    assert "vendor" in err
+    assert "有源文件未纳入检测" in err
+
+
+def test_probe_budget_exhausted_is_reported_separately(tmp_path, capsys):
+    """文件太多、探查预算用尽时，要说清楚"没能确认"，不能混同于"没有"。
+
+    否则一个几十万文件的 node_modules/ 会被报成"跳过的目录里没有源文件"——
+    那是把"没查完"说成"查过了没问题"，正是这类提示要防的事。
+    """
+    bulk = tmp_path / "vendor" / "bulk"
+    bulk.mkdir(parents=True)
+    for i in range(2100):
+        (bulk / f"f{i:04d}.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "a.py").write_text("import sys\n", encoding="utf-8")
+
+    _common.collect_files([str(tmp_path)], (".py",))
+
+    err = capsys.readouterr().err
+    assert "没能确认" in err
+    assert "有源文件未纳入检测" not in err
+
+
+def test_probe_finds_source_before_budget_runs_out(tmp_path, capsys):
+    """对照:预算内能找到时照常报"有源文件"。"""
+    bulk = tmp_path / "vendor"
+    bulk.mkdir()
+    for i in range(100):
+        (bulk / f"f{i:03d}.txt").write_text("x", encoding="utf-8")
+    (bulk / "real.go").write_text("package x\n", encoding="utf-8")
+    (tmp_path / "a.py").write_text("import sys\n", encoding="utf-8")
+
+    _common.collect_files([str(tmp_path)], (".py", ".go"))
+
+    err = capsys.readouterr().err
+    assert "有源文件未纳入检测" in err
+    assert "没能确认" not in err
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

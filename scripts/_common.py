@@ -358,19 +358,31 @@ def read_source(path: str) -> str:
     return data.decode("latin-1")
 
 
-def _has_sources_directly(directory: str, suffixes: tuple[str, ...]) -> bool:
-    """目录**本层**有没有目标后缀的文件（不递归）。
+def _probe_skipped_dir(directory: str, suffixes: tuple[str, ...],
+                       budget: int = 2000) -> str:
+    """有预算地探查被跳过的目录里有没有源文件。
 
-    只查一层是刻意的：`build/` / `node_modules/` 里可能有几十万个文件，
-    为了报一句提示而完整遍历一遍，比不提示更贵。嵌套很深的源码被跳过时这条
-    提示不出，但那种情况下连"有多少"都数不清，提示了也没有可操作性。
+    返回 "found"（找到）、"none"（查完没有）、"unknown"（预算用尽，没查完）。
+
+    为什么不再只查本层：Go 的 `vendor/`、Java 的 `build/` 里源码是**嵌套**的，
+    只扫一层等于绝大多数情况都不出声，那条提示就白写了。但完整遍历
+    `node_modules/` 可能是几十万个文件，比不提示更贵——所以给一个文件数预算，
+    超限就明说"没查完"，不猜。
     """
+    seen = 0
     try:
-        with os.scandir(directory) as entries:
-            return any(e.is_file() and e.name.endswith(suffixes)
-                       for e in entries)
+        # 只用第三项 filenames;前两项按惯例用 _ / __ 占位(纯下划线名才是本仓库
+        # --dummy-variables-rgx=^_+$ 认的"故意未使用")
+        for _, __, filenames in os.walk(directory):
+            for name in filenames:
+                if name.endswith(suffixes):
+                    return "found"
+            seen += len(filenames)
+            if seen > budget:
+                return "unknown"
     except OSError:
-        return False
+        return "none"
+    return "none"
 
 
 def collect_files(paths: list[str], suffixes: tuple[str, ...],
@@ -387,6 +399,7 @@ def collect_files(paths: list[str], suffixes: tuple[str, ...],
     skip = SKIP_DIRS if skip_dirs is None else skip_dirs
     out: list[str] = []
     skipped: set[str] = set()
+    unknown: set[str] = set()
     for path in paths:
         if os.path.isfile(path):
             out.append(path)
@@ -395,17 +408,27 @@ def collect_files(paths: list[str], suffixes: tuple[str, ...],
             for name in dirnames:
                 if name in skip:
                     full = os.path.join(dirpath, name)
-                    if _has_sources_directly(full, suffixes):
+                    probe = _probe_skipped_dir(full, suffixes)
+                    if probe == "found":
                         skipped.add(full)
+                    elif probe == "unknown":
+                        unknown.add(full)
             dirnames[:] = [d for d in dirnames if d not in skip]
             for name in filenames:
                 if name.endswith(suffixes):
                     out.append(os.path.join(dirpath, name))
-    if skipped:
-        shown = ", ".join(sorted(skipped)[:3])
-        more = f" 等 {len(skipped)} 个" if len(skipped) > 3 else ""
-        print(f"detect: 跳过的目录里有源文件,未纳入检测:{shown}{more}"
-              f"(见 README 已知缺陷「SKIP_DIRS」)", file=sys.stderr)
+    if skipped or unknown:
+        parts = []
+        if skipped:
+            shown = ", ".join(sorted(skipped)[:3])
+            more = f" 等 {len(skipped)} 个" if len(skipped) > 3 else ""
+            parts.append(f"有源文件未纳入检测:{shown}{more}")
+        if unknown:
+            shown = ", ".join(sorted(unknown)[:3])
+            more = f" 等 {len(unknown)} 个" if len(unknown) > 3 else ""
+            parts.append(f"文件太多只探查了前 2000 个、没能确认:{shown}{more}")
+        print("detect: 跳过的目录——" + "；".join(parts)
+              + "(见 README 已知缺陷「SKIP_DIRS」)", file=sys.stderr)
     return sorted(out)
 
 

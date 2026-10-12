@@ -58,6 +58,7 @@
 
 ### Fixed
 
+- **`SKIP_DIRS` 深层的源文件被跳过时不出声（已缓解）。** 此前只查被跳过目录的**本层**,而 Go 的 `vendor/`、Java 的 `build/` 里源码本来就是嵌套的——那条提示基本白写。改为有预算地向下探查(默认 2000 个文件):找到就报,预算用尽会明说没能确认,不把没查完说成没有。给预算而不是完整遍历是刻意的:`node_modules/` 可能有几十万个文件,为报一句提示全遍历比不提示更贵。
 - **`detect_cpp.py` 只允许一个尾部修饰符，常见 C++ 函数整条漏检。** 正则是 `(?:const|noexcept|override|final)?`，只匹配**一个**关键字，于是 `void f() const noexcept`、`const override`、`noexcept override`、`const volatile` 全部判不出是函数——`function_defs` 直接返回 `[]`，`golint/fnsize` 和 `BackwardNull` 双双漏检。这是极常见的成员函数写法，影响面比已记录的 raw string 更大。改为允许任意多个并列（含 `&` / `&&` 引用限定符）。
 - **检测器自身抛异常时退出码是 1 而不是 2。** 上一轮把“三种情形返回 2”写进了 README / SKILL.md / CHANGELOG 三处，但实现只有两种：异常一路穿透 `main()`，CLI 退出码 1——一个崩掉的检测器和一份几千条的违规清单共用一个码。在 `detect.py` 与 `_common.finish()` 各加一层顶层兜底（附录 D 里“顶层兜底”那类有意的宽捕获，理由写在 pragma 上方）。
 - **`--json | head` 在大项目上必吐 traceback。** JSON 分支只接 `AttributeError`，读端提前走掉时抛 `BrokenPipeError`，实测 1200 文件项目 3/3 复现、stderr 500+ 字节。改为接住 `BrokenPipeError` / `OSError` / `ValueError` 并把 fd 指向 devnull（避开 Python 退出时再刷一次的那个 "Exception ignored"）。
