@@ -92,7 +92,7 @@ python -m pytest scripts/ -q
 - `detect_go.py` 不是 Go 解析器，是行扫描器；遇到非常规格式可能漏报。
 - `detect_cpp.py` 的 `BackwardNull` 是候选级，不能替代 clang-tidy 之类的分析器。
 - C++ 侧：单行函数体（`int f() { return 0; }`）不被识别、构造函数初始化列表的函数名取到最后一个初始化成员、多后缀签名（`const noexcept override`）漏检。**文档注释不会算进 fnsize**——实测五种形态（无注释 / 单行 `/** */` / 多行 / `//` / 注释后空行）函数规模都是 5 行，`_signature_start` 停在签名首行。
-- Windows 下把输出重定向到文件或管道时，Python 按本地代码页编码（简体中文环境是 cp936），按 UTF-8 读会乱码；直接看控制台不受影响（走 `WriteConsoleW`）。需要管道或落盘时设 `PYTHONIOENCODING=utf-8`，或先 `chcp 65001`。检测器读源文件不受此影响——它自己探测编码。
+- Windows 下把输出重定向到文件或管道时，Python 按本地代码页编码（简体中文环境是 cp936），按 UTF-8 读会乱码；直接看控制台不受影响（走 `WriteConsoleW`）。需要管道或落盘时设 `PYTHONIOENCODING=utf-8`，或先 `chcp 65001`。检测器读源文件不受此影响——它自己探测编码。**这条同时覆盖 stderr**：聚合统计和错误提示（`detect: 3 处违规`）走 stderr，重定向后同样是 cp936；`--json` 例外，它固定按 UTF-8 写，正是为了能安全地管道给机器。
 
 ### 已知缺陷（已复现，未修）
 
