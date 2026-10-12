@@ -42,7 +42,7 @@
 | --- | --- | --- |
 | `detect_python.py` | 行宽、宽异常、未使用变量/导入、CCN | 依赖 pylint 已安装；装不上时自动退回内置 AST 检测（只剩行宽 + CCN）。缺 docstring 不在本规范范围内 |
 | `detect_go.py` | 包注释、导出符号注释、行宽、函数规模 | **轻量行扫描器，不是 Go 解析器**。假设代码经过 gofmt（声明与右花括号在行首）。不理解 struct tag、cgo、build tag 里的花括号。项目有 golangci-lint / revive 时以它们为准 |
-| `detect_cpp.py` | 行宽、函数规模、`BackwardNull` 候选 | 真正的空指针分析需要 clang-tidy。`BackwardNull` 只报"指针判空后在判空分支之外被解引用"这一种窄模式，**已排除"判空后提前返回"这一安全惯用法**，宁可漏报不误报。**跨行字符串会破坏花括号深度**：`scan_lines` 的 `in_string` 是每行局部变量、不跨行延续，于是 C++11 raw string `R"(...)"` 和普通反斜杠续行字符串都会让深度失真（实测前者报出 phantom 函数，后者把 5 行函数截成 3 行） |
+| `detect_cpp.py` | 行宽、函数规模、`BackwardNull` 候选 | 真正的空指针分析需要 clang-tidy。`BackwardNull` 只报"指针判空后在判空分支之外被解引用"这一种窄模式，**已排除"判空后提前返回"这一安全惯用法**，宁可漏报不误报。跨行字符串（反斜杠续行、C++11 raw string `R"delim(...)delim"`）已正确处理，其中的花括号不参与深度 |
 
 C/C++ 的函数规模检测按"函数签名首行到配套右花括号"计，能识别定义在命名空间或类内的函数（命名空间 / class / struct 体本身不算函数）。
 

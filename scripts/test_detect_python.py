@@ -22,6 +22,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # pylint: disable=wrong-import-position
+import _common  # noqa: E402
+from _common import Finding  # noqa: E402
 import detect_python  # noqa: E402
 from _testhelpers import lines_of  # noqa: E402
 
@@ -436,26 +438,154 @@ def test_max_line_length_is_passed_to_pylint(monkeypatch, tmp_path):
 def test_pylint_output_parsing_survives_form_feed(monkeypatch, tmp_path):
     """pylint 输出里的 0x0C 不能让一条明细变成两条。
 
-    pylint 在 duplicate-code(R0801)里会回显源码行,那一行里可能带 0x0C。
     解析用 str.splitlines() 时会把它切成两半,两半各自都长得像一条明细,于是一条
-    变两条;split_lines 按 pylint 的口径把它留在同一行,贪婪的 file 段虽然还是会
-    匹配,但只产出一条。变异测试实测:把这一处换回 splitlines(),本用例由 1 条变 2 条。
+    变两条;split_lines 按 pylint 的口径把它留在同一行。变异测试实测:把这一处换回
+    splitlines(),本用例的发现数从 0 变成 2。
 
-    顺带记一个**未修的解析隐患**:`_PYLINT_LINE` 的 file 段是贪婪 `.+`,所以源码行里
-    只要出现 `xxx:N:M: CODE: msg (sym)` 的形状就会被当成明细——和 0x0C 无关。
+    这里断言"不增多"而不是具体条数:粘连行经贪婪 file 段解析后,file 段会变成
+    `...(sym)` 后面跟着 0x0C 再跟一遍路径,这种垃圾串随后被
+    test_findings_for_unscanned_files_are_dropped 守的那道过滤正确丢掉——所以修复后
+    是 0 条。真正防 phantom 的是那道过滤,这条只保证 0x0C 不会让条数翻倍。
     """
-    echoed = ("sample.py:2:0: C0301: Line too long (130/120) (line-too-long)"
+    sample = _write_sample(str(tmp_path), "x = 1\n")
+    echoed = (f"{sample}:2:0: C0301: Line too long (130/120) (line-too-long)"
               "\x0c "
-              "sample.py:3:0: C0301: Line too long (140/120) (line-too-long)")
+              f"{sample}:3:0: C0301: Line too long (140/120) (line-too-long)")
     monkeypatch.setattr(
         subprocess, "run",
         lambda cmd, **kw: SimpleNamespace(stdout=echoed, stderr="",
                                          returncode=0))
-    _write_sample(str(tmp_path), "x = 1\n")
 
     findings = detect_python.collect([str(tmp_path)])
 
-    assert len(findings) == 1, findings
+    assert len(findings) <= 1, findings
+
+
+def test_findings_for_unscanned_files_are_dropped(monkeypatch, tmp_path):
+    """不是我们扫过的文件,它的"明细"必须被丢掉。
+
+    `_PYLINT_LINE` 的 file 段是贪婪 `.+`,任何长得像 `xxx:N:M: CODE: msg (sym)`
+    的行都会被当成一条发现——pylint 的输出里除了明细还有 Module 头、评分脚注,
+    某些配置下还会回显源码行。按"我们真扫过哪些文件"收口一次,phantom 发现就进不来。
+    """
+    sample = _write_sample(str(tmp_path), "x = 1\n")
+    echoed = (f"{sample}:2:0: C0301: Line too long (130/120) (line-too-long)\n"
+              "some/other/file.py:9:0: C0301: Line too long (999/120) "
+              "(line-too-long)\n"
+              "************* Module sample\n")
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda cmd, **kw: SimpleNamespace(stdout=echoed, stderr="",
+                                         returncode=0))
+
+    findings = detect_python.collect([str(tmp_path)])
+
+    assert lines_of(findings, "line-too-long") == [2], findings
+
+
+def test_report_output_is_sorted(monkeypatch, capsys):
+    """明细必须按 (规则, 文件, 行号) 排序输出。
+
+    变异测试实测:把 report() 里的 sorted(...) 去掉,输出顺序不确定,而没有任何
+    用例断言过顺序——顺序乱掉时人读报告找不到重点,管道给其他工具也不稳定。
+    """
+    findings = [
+        Finding("ccn", "b.py", 1, "x"),
+        Finding("broad-except", "a.py", 9, "y"),
+        Finding("broad-except", "a.py", 2, "z"),
+    ]
+
+    _common.report(findings, as_json=False)
+
+    out = capsys.readouterr().out.strip().split("\n")
+    assert len(out) == 3
+    assert out[0].startswith("broad-except\ta.py:2\t")
+    assert out[1].startswith("broad-except\ta.py:9\t")
+    assert out[2].startswith("ccn\tb.py:1\t")
+
+
+def test_dummy_variables_rgx_is_passed_to_pylint(monkeypatch, tmp_path):
+    """--dummy-variables-rgx 必须真的传给 pylint。
+
+    这个开关让检测器比 pylint 默认更严(`_unused` / `_idx` 也会报),docstring 里
+    专门解释了它。变异测试实测:不传这条参数,56 条测试照样全绿——一个影响
+    "检测器与项目自己的 pylint 配置是否一致"的开关无人看守。
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _write_sample(str(tmp_path), "x = 1\n")
+
+    detect_python.collect([str(tmp_path)])
+
+    assert "--dummy-variables-rgx" in captured["cmd"]
+    assert "^_+$" in captured["cmd"]
+
+
+def test_docstring_checks_are_disabled_for_pylint(monkeypatch, tmp_path):
+    """missing-*-docstring 与 invalid-name 必须被禁用。
+
+    这两类不在本规范范围内。变异测试实测:把 invalid-name 从 --disable 里去掉,
+    会多报一批范围外规则,把"按规则聚合做前后对比"的基线搅乱。
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _write_sample(str(tmp_path), "x = 1\n")
+
+    detect_python.collect([str(tmp_path)])
+
+    disabled = captured["cmd"][captured["cmd"].index("--disable") + 1]
+    for rule in ("missing-module-docstring", "missing-function-docstring",
+                 "missing-class-docstring", "invalid-name"):
+        assert rule in disabled, rule
+
+
+def test_qualname_includes_full_ancestor_chain():
+    """嵌套函数的限定名要走完整祖先链。
+
+    曾用"第一个包含它的类"就停,于是类方法里的嵌套函数报成 `C.inner` 而不是
+    `C.m.inner`——两个不同函数在报告里长得一模一样,按名字去找代码的人会找错。
+    """
+    import ast
+
+    src = ("class C:\n"
+           "    def m(self):\n"
+           "        def inner():\n"
+           "            pass\n"
+           "        return inner\n")
+    tree = ast.parse(src)
+    inner = tree.body[0].body[0].body[0]
+
+    assert detect_python._qualname(tree, inner) == "C.m.inner"
+
+
+def test_qualname_distinguishes_same_named_nested_functions():
+    """两个不同函数里的同名内函数,限定名必须能区分。"""
+    import ast
+
+    src = ("def a():\n"
+           "    def x():\n"
+           "        pass\n"
+           "    return x\n"
+           "\n"
+           "def b():\n"
+           "    def x():\n"
+           "        pass\n"
+           "    return x\n")
+    tree = ast.parse(src)
+    names = {detect_python._qualname(tree, n) for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef)}
+
+    assert {"a", "b", "a.x", "b.x"} <= names, names
 
 
 def test_main_returns_2_when_no_python_files(tmp_path):

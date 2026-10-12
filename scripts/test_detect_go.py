@@ -267,5 +267,27 @@ def test_group_close_depth_guard_keeps_fields_out(tmp_path):
     assert "Upper" not in " ".join(f.message for f in findings)
 
 
+def test_struct_with_interface_named_field_is_not_an_interface(tmp_path):
+    """单行 `type S struct { interfaceX int }` 不能被误判成接口。
+
+    判据曾是子串 `"interface" in stripped`,字段名里含 interface 就把结构体
+    报成了 interfacecomment——规则名错了,`--rules golint/structcomment` 筛不到它。
+    """
+    path = write_source(tmp_path, "field.go",
+                        "package sample\n\n"
+                        "type S struct { interfaceX int }\n\n"
+                        "type I interface { Do() }\n")
+
+    findings = detect_go.collect([path])
+
+    struct_msgs = " ".join(f.message for f in findings
+                           if f.rule == "golint/structcomment")
+    iface_msgs = " ".join(f.message for f in findings
+                          if f.rule == "golint/interfacecomment")
+    assert "S" in struct_msgs, findings
+    assert "S" not in iface_msgs, findings
+    assert "I" in iface_msgs, findings
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

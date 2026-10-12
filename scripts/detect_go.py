@@ -41,6 +41,19 @@ RE_TYPE = re.compile(r"^type\s+([A-Za-z_]\w*)")
 RE_GROUP_OPEN = re.compile(r"^(?:var|const|type)\s*\(\s*$")
 RE_GROUP_SPEC = re.compile(r"^\s*([A-Za-z_]\w*)")
 RE_PACKAGE = re.compile(r"^package\s+([A-Za-z_]\w*)")
+# 类型种类关键字。必须带词边界:单行写法 `type S struct { interfaceX int }` 里
+# 字段名含 interface,用子串判据会把结构体误判成接口(实测确实误报)。
+RE_TYPE_KIND = re.compile(r"\b(interface|struct)\b")
+
+
+def _is_interface_spec(text: str) -> bool:
+    """这行声明的是接口还是结构体。
+
+    取**第一个** interface / struct 关键字:名字之后那个才是类型种类,字段名、
+    内联类型里的同名单词不算。词边界保证 `interfaceX` 不匹配。
+    """
+    match = RE_TYPE_KIND.search(text)
+    return bool(match) and match.group(1) == "interface"
 
 
 
@@ -97,7 +110,7 @@ def _group_spec_finding(group_kind: str, code: str, stripped: str,
     name = match.group(1)
     if group_kind == "type":
         # 接口与结构体分开报,和顶层声明保持同一套规则名。
-        is_iface = "interface" in stripped
+        is_iface = _is_interface_spec(stripped)
         rule = "golint/interfacecomment" if is_iface else "golint/structcomment"
         kind = "接口" if is_iface else "结构体"
     else:
@@ -176,7 +189,7 @@ def _declaration_findings(rows: list[dict], path: str, max_func: int) -> list[Fi
             # struct。曾在这里硬编码 structcomment,于是顶层接口全被报成
             # structcomment,而 `--rules golint/interfacecomment` 一条都筛不到——
             # registry 把两条当成独立规则列了两行,门禁按规则名筛时静默少一批。
-            is_iface = "interface" in stripped
+            is_iface = _is_interface_spec(stripped)
             finding = _doc_comment_finding(
                 "golint/interfacecomment" if is_iface else "golint/structcomment",
                 "接口" if is_iface else "类型",

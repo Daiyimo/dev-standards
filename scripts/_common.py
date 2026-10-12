@@ -153,29 +153,59 @@ def overlong_lines(rows: list[dict], path: str, max_line: int) -> list[Finding]:
 # C 家族极简扫描器:Go 与 C/C++ 共用
 # ---------------------------------------------------------------------------
 
+def _cpp_raw_string_open(line: str, i: int) -> tuple[str, int] | None:
+    """位置 i 上是否是 C++11 raw string 的起点 `R"delim(`。
+
+    是则返回 (收尾符 `)delim"`, 起点消耗的字符数);不是则返回 None。
+    delim 按标准不允许含圆括号、反斜杠和空白,长度上限 16——超长的按普通字符串处理。
+    """
+    if line[i] != "R" or i + 1 >= len(line) or line[i + 1] != '"':
+        return None
+    j = i + 2
+    delim: list[str] = []
+    while j < len(line) and line[j] != "(" and len(delim) < 16:
+        delim.append(line[j])
+        j += 1
+    if j >= len(line) or line[j] != "(":
+        return None
+    text = "".join(delim)
+    if any(c in text for c in '()\\ \t'):
+        return None
+    return ")" + text + '"', (j + 1) - i
+
+
 def scan_lines(text: str, raw_strings: bool = True) -> list[dict]:
     """把每行切成 {raw, code, depth_before, depth_after, is_comment}。
 
     code 是去掉注释与字符串内容后的代码(字符串整体替换为 ""),关键是其中的
     花括号不参与深度计数。跨行块注释按状态延续。
 
-    raw_strings=False 时忽略反引号裸字符串(C/C++ 没有这个语法;Go 有)。
+    raw_strings=False 时忽略反引号裸字符串(C/C++ 没有这个语法;Go 有),
+    但**启用 C++11 raw string** `R"delim( ... )delim"`。
 
-    圈复杂度约 26,高于常规阈值但**不拆**:复杂度来自词法状态本身
-    (行注释 / 块注释 / 字符串 / 裸字符串 / 转义各一支),不是为了少写代码堆出来的。
-    拆成多个函数只会让状态在函数间传递,比现在更难读,也不降低出错概率。
+    跨行延续的状态有三类,都必须在行间传递,否则花括号深度会失真:
+    块注释、Go 反引号裸串、C++ raw string,以及**行尾是反斜杠续行的字符串**。
+    最后一条只在 `行尾是反斜杠` 时延续——落单的引号不延续,否则 C++14 的数字
+    分隔符 `1'000'000` 会把后半文件都吞掉。
+
+    圈复杂度约 32,高于常规阈值但**不拆**:复杂度来自词法状态本身
+    (行注释 / 块注释 / 字符串 / 裸字符串 / raw string / 转义各一支),
+    不是为了少写代码堆出来的。拆成多个函数只会让状态在函数间传递,
+    比现在更难读,也不降低出错概率。
     """
     rows: list[dict] = []
     depth = 0
     in_block_comment = False
     in_raw_string = False
+    in_cpp_raw = False          # C++11 R"delim( ... )delim"
+    cpp_raw_end = ""            # 对应的收尾符 )delim"
+    in_string = False
+    quote = ""
 
     for raw in split_lines(text):
         code_chars: list[str] = []
         i, n = 0, len(raw)
         in_line_comment = False
-        in_string = False
-        quote = ""
 
         while i < n:
             ch = raw[i]
@@ -193,6 +223,16 @@ def scan_lines(text: str, raw_strings: bool = True) -> list[dict]:
                     in_raw_string = False
                     code_chars.append('""')
                 i += 1
+                continue
+
+            if in_cpp_raw:
+                # raw string 里的内容一律不当代码:花括号、引号、注释全都不是
+                if raw.startswith(cpp_raw_end, i):
+                    in_cpp_raw = False
+                    code_chars.append('""')
+                    i += len(cpp_raw_end)
+                else:
+                    i += 1
                 continue
 
             if in_line_comment:
@@ -220,6 +260,13 @@ def scan_lines(text: str, raw_strings: bool = True) -> list[dict]:
                 in_raw_string = True
                 i += 1
                 continue
+            if not raw_strings:
+                opened = _cpp_raw_string_open(raw, i)
+                if opened is not None:
+                    cpp_raw_end, skip = opened
+                    in_cpp_raw = True
+                    i += skip
+                    continue
             if ch in ('"', "'"):
                 in_string = True
                 quote = ch
@@ -232,6 +279,12 @@ def scan_lines(text: str, raw_strings: bool = True) -> list[dict]:
             elif ch == "}":
                 depth = max(0, depth - 1)
             i += 1
+
+        # 字符串状态只在"行尾是反斜杠续行"时带到下一行。落单的引号就地复位:
+        # 1'000'000 里的撇号、没配对的引号都不该把后半文件吞掉。
+        if not (in_string and raw.endswith("\\")):
+            in_string = False
+            quote = ""
 
         code = "".join(code_chars)
         rows.append({
@@ -305,23 +358,54 @@ def read_source(path: str) -> str:
     return data.decode("latin-1")
 
 
+def _has_sources_directly(directory: str, suffixes: tuple[str, ...]) -> bool:
+    """目录**本层**有没有目标后缀的文件（不递归）。
+
+    只查一层是刻意的：`build/` / `node_modules/` 里可能有几十万个文件，
+    为了报一句提示而完整遍历一遍，比不提示更贵。嵌套很深的源码被跳过时这条
+    提示不出，但那种情况下连"有多少"都数不清，提示了也没有可操作性。
+    """
+    try:
+        with os.scandir(directory) as entries:
+            return any(e.is_file() and e.name.endswith(suffixes)
+                       for e in entries)
+    except OSError:
+        return False
+
+
 def collect_files(paths: list[str], suffixes: tuple[str, ...],
                   skip_dirs: set[str] | None = None) -> list[str]:
-    """按后缀收集源文件。paths 里的文件直接收,目录递归。"""
+    """按后缀收集源文件。paths 里的文件直接收,目录递归。
+
+    跳过的目录里**确实有源文件**时,往 stderr 打一行汇总。没有这一行,
+    "少扫一批文件而退出码不变"——门禁把没查当成查过了,正是 NoSourceFiles
+    要防的那类静默通过,只是触发条件从路径打错换成目录名。
+    """
     # 用 is None 判,不用 `or`:`skip_dirs=set()` 是 falsy,`or` 会让它静默回落成
     # 默认 SKIP_DIRS,"我想什么都不跳过"这个意图表达不出来。当前没有调用方传空集合,
     # 但这是个踩上去才知道的坑。
     skip = SKIP_DIRS if skip_dirs is None else skip_dirs
     out: list[str] = []
+    skipped: set[str] = set()
     for path in paths:
         if os.path.isfile(path):
             out.append(path)
             continue
         for dirpath, dirnames, filenames in os.walk(path):
+            for name in dirnames:
+                if name in skip:
+                    full = os.path.join(dirpath, name)
+                    if _has_sources_directly(full, suffixes):
+                        skipped.add(full)
             dirnames[:] = [d for d in dirnames if d not in skip]
             for name in filenames:
                 if name.endswith(suffixes):
                     out.append(os.path.join(dirpath, name))
+    if skipped:
+        shown = ", ".join(sorted(skipped)[:3])
+        more = f" 等 {len(skipped)} 个" if len(skipped) > 3 else ""
+        print(f"detect: 跳过的目录里有源文件,未纳入检测:{shown}{more}"
+              f"(见 README 已知缺陷「SKIP_DIRS」)", file=sys.stderr)
     return sorted(out)
 
 

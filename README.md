@@ -96,17 +96,26 @@ python -m pytest scripts/ -q
 
 ### 已知缺陷（已复现，未修）
 
-当门禁用之前先知道这几条，它们都往“漏报 / 误报 + 退出码不变”方向坏：
+当门禁用之前先知道这几条，它们都往“漏报 / 误报”方向坏：
 
-- **C++ 跨行字符串破坏花括号深度。** `_common.scan_lines` 的 `in_string` 是**每行局部变量**，不跨行延续（而 `in_block_comment` 跨行）。于是两种写法都会让深度失真：
-  - C++11 raw string `R"( ... { ... )"` —— 字符串里的 `{` 被计入深度，实测报出 phantom 函数（函数名来自字符串内部）且真实函数区间被拉到 EOF；
-  - 普通的反斜杠续行字符串 `const char* s = "abc\` 换行 `def } ghi";` —— 同理，实测 5 行函数被截成 3 行。
+- **pylint 输出的非明细行可能被误判成发现（已缓解，未根治）。** `_PYLINT_LINE` 的 file 段是贪婪 `.+`，任何长得像 `xxx:N:M: CODE: msg (sym)` 的行都会被当成一条发现。pylint 的输出里除了明细还有 Module 头（`************* Module x`）和评分脚注。**已做的缓解**：`pylint_findings` 只保留“我们真扫过的文件”的明细，phantom 发现进不来（实测 pylint 4.1.2 的 text 输出会把传入路径原样回显，比对可靠）。**未根治**：如果被扫文件自己有一行代码长得像一条明细，仍会被误报。
+- **`SKIP_DIRS` 深层的源文件仍被静默跳过（已缓解，未根治）。** `build/` / `dist/` / `vendor/` / `testdata/` 等目录不扫。**已做的缓解**：目录**本层**有源文件时往 stderr 打一行汇总。只查一层是刻意的——`node_modules/` 里可能有几十万个文件，为报一句提示完整遍历一遍比不提示更贵。**未根治**：嵌套较深的源码被跳过时仍然不出声。
 
-  两条同根，修任一条都要改 `scan_lines` 的词法状态机，而它同时服务 Go 与 C++，改动面大于其余几条，故留待单独一次整改。
-- **`SKIP_DIRS` 被无提示跳过。** `build` / `dist` / `vendor` / `testdata` 等目录下的源文件不扫，退出码不变——和上面那条是同一种坏法（少查一批文件而门禁看不出），只是触发条件是目录名而不是文件内容。
-- **pylint 输出里的源码行可能被误判成明细。** `_PYLINT_LINE` 的 file 段是贪婪 `.+`，而 pylint 在 duplicate-code（R0801）里会回显源码行；那一行里只要出现 `xxx:N:M: CODE: msg (sym)` 的形状就会被当成一条真发现。与行尾字符无关，是解析判据太宽。
-
-已修（曾经的已知缺陷，修复均有测试守住，回退即变红）：pylint 分批（Windows 命令行超长时曾静默丢三条规则且退出码 0）、裸 `except:` 漏报、`str.splitlines()` 断行偏移、`--rules` 传不存在规则名返回 0、`--json` 重定向后不是 UTF-8、顶层 Go 接口被报成 `structcomment`。
+已修（曾经的已知缺陷，修复均有测试守住，回退即变红）：
+C++ 跨行字符串破坏花括号深度（反斜杠续行字符串与 C++11 raw string 同根因，`scan_lines` 的字符串状态现在按行尾反斜杠判断是否延续，并新增 `R"delim(...)delim"` 识别）；
+`SKIP_DIRS` 无提示跳过（现在会出声）；
+pylint 分批（Windows 命令行超长时曾静默丢三条规则且退出码 0）；
+裸 `except:` 漏报；
+`str.splitlines()` 断行偏移；
+`--rules` 传不存在规则名返回 0；
+`--json` 重定向后不是 UTF-8；
+顶层 Go 接口被报成 `structcomment`；
+C++ 只认一个尾部修饰符（`const noexcept` 整个函数曾对 fnsize / BackwardNull 隐形）；
+检测器自身抛异常时退出码是 1 而不是 2；
+`--json | head` 的 BrokenPipeError；
+同一语法错误文件报两条 `error`；
+`_qualname` 对嵌套函数丢一层；
+`is_iface` 用子串判据（单行 `type S struct { interfaceX int }` 曾被误判成接口）。
 
 ## 三种工作方式
 
@@ -179,7 +188,7 @@ curl -fsSL https://raw.githubusercontent.com/Daiyimo/dev-standards/main/uninstal
 - 主文件只保留高频决策规则；长方法和模式留在 `references/`。
 - 新规则必须说明它保护的真实功能或风险，不能只因为“最佳实践”就升级为默认强制项。
 - 修改规范意图时，在 `CHANGELOG.md` 记录原因。
-- `scripts/` 与 `references/` 的规则、阈值或检测能力变化同样记进 `CHANGELOG.md`；提交前跑一遍 `python -m pytest scripts/ -q` 和 `python scripts/detect.py .`。后者在本仓库**不要求归零**——自扫固定有 1 处 `ccn`（`scripts/_common.py` 的 `scan_lines`，圈复杂度 26，docstring 里声明有意不拆），退出码 1 是预期结果；要盯的是“改动前后计数一致、没有新增规则类别”。
+- `scripts/` 与 `references/` 的规则、阈值或检测能力变化同样记进 `CHANGELOG.md`；提交前跑一遍 `python -m pytest scripts/ -q` 和 `python scripts/detect.py .`。后者在本仓库**不要求归零**——自扫固定有 1 处 `ccn`（`scripts/_common.py` 的 `scan_lines`，圈复杂度 32，docstring 里声明有意不拆），退出码 1 是预期结果；要盯的是“改动前后计数一致、没有新增规则类别”。
 - 默认安装路径从 `origin/main` 拉取，本地源码的改动必须 commit + push 后才会对安装副本生效；不想先 push 就用 `CLAUDE_SKILLS_SRC` 从本地同步。
 - 发布前确认源码目录与实际安装副本的 `SKILL.md`、`references/`、`scripts/` 保持一致。
 - 只装一处：不要在工作区里再放一份 `.claude/skills/dev-standards`，那会变成漂移源，出现"改了源码却没生效"。

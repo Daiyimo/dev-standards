@@ -198,5 +198,133 @@ def test_scan_lines_does_not_expose_indent_field():
     assert "indent" not in rows[0]
 
 
+def test_backslash_continued_string_does_not_count_braces():
+    """行尾是反斜杠续行时,字符串状态必须带到下一行。
+
+    `in_string` 曾是每行局部变量,于是行尾带反斜杠的 `"abc` 续行到
+    `def } ghi";` 时,后者里的 `}` 被当成代码,深度从 1 掉到 0,整个函数的区间被
+    截断——fnsize 和 BackwardNull 一起失真。实测修复前 function_defs 是
+    [('f', 0, 2)],修复后是 [('f', 0, 4)]。
+    """
+    text = ('void f(Node* p) {\n'
+            '    const char* s = "abc' + chr(92) + '\n'
+            'def } ghi";\n'
+            '    return p->x;\n'
+            '}\n')
+
+    rows = _common.scan_lines(text, raw_strings=False)
+
+    assert [r["depth_after"] for r in rows] == [1, 1, 1, 1, 0]
+
+
+def test_unterminated_quote_does_not_swallow_the_file():
+    """落单的引号不能把后半文件吞掉——只有反斜杠续行才延续字符串状态。
+
+    这是上一条的必要约束:C++14 的二进制位分隔符 `0b1010'1010` 里只有一个撇号,
+    字符串状态从此永不闭合;若让它无条件跨行,从那之后的所有花括号都不再计数,
+    整份报告的深度全错。
+
+    样本必须用**奇数个**撇号:`1'000'000` 有两个,字符串会自己开合,测不出这条。
+    """
+    text = "int a = 0b1010'1010;\nint b() {\n    return 1;\n}\n"
+
+    rows = _common.scan_lines(text, raw_strings=False)
+
+    assert [r["depth_after"] for r in rows] == [0, 1, 1, 0]
+
+
+def test_cpp_raw_string_braces_are_not_code():
+    """C++11 raw string 里的花括号不是代码。
+
+    `R"glsl( void main() { ... )glsl"` 里的 `{` 曾把深度推高,收尾的 `}` 又拉低,
+    实测报出一个函数名叫 main 的 phantom 函数,真实函数区间被拽到 EOF。
+    """
+    text = ('void f(Node* p) {\n'
+            '    auto shader = R"glsl(\n'
+            'void main() {\n'
+            '    gl_Position = vec4(1.0);\n'
+            '}\n'
+            ')glsl";\n'
+            '    return p->x;\n'
+            '}\n')
+
+    rows = _common.scan_lines(text, raw_strings=False)
+
+    assert [r["depth_after"] for r in rows] == [1, 1, 1, 1, 1, 1, 1, 0]
+
+
+def test_cpp_raw_string_with_delimiter_and_nested_parens():
+    """带 delim 的 raw string 也要认,且内容里的括号不影响深度。"""
+    text = ('int g() {\n'
+            '    auto s = R"xy(a ) b { c)xy";\n'
+            '    return 1;\n'
+            '}\n')
+
+    rows = _common.scan_lines(text, raw_strings=False)
+
+    assert [r["depth_after"] for r in rows] == [1, 1, 1, 0]
+
+
+def test_go_backtick_raw_string_still_works():
+    """对照:Go 的反引号裸串行为不能被上面几改动。"""
+    text = "package p\n\nvar s = `\na { b\n`\n"
+
+    rows = _common.scan_lines(text, raw_strings=True)
+
+    assert [r["depth_after"] for r in rows] == [0, 0, 0, 0, 0]
+
+
+def test_cpp_raw_string_not_enabled_for_go():
+    """Go 模式下不启用 C++ raw string 语法(Go 里 R"( 没有特殊含义)。"""
+    text = 'package p\n\nvar s = R"(a { b)"\n'
+
+    rows = _common.scan_lines(text, raw_strings=True)
+
+    # Go 侧把它当普通字符串处理,行为与修复前一致
+    assert [r["depth_after"] for r in rows] == [0, 0, 0]
+
+
+def test_skipped_dir_with_sources_is_reported(tmp_path, capsys):
+    """跳过的目录里**有源文件**时必须说一声。
+
+    没有这一行,"少扫一批文件而退出码不变"——门禁把没查当成查过了,正是
+    NoSourceFiles 要防的那类静默通过,只是触发条件从路径打错换成目录名。
+    """
+    (tmp_path / "build").mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "build" / "gen.py").write_text("import os\n", encoding="utf-8")
+    (tmp_path / "src" / "a.py").write_text("import sys\n", encoding="utf-8")
+
+    _common.collect_files([str(tmp_path)], (".py",))
+
+    err = capsys.readouterr().err
+    assert "build" in err
+    assert "SKIP_DIRS" in err
+
+
+def test_skipped_dir_without_sources_stays_quiet(tmp_path, capsys):
+    """对照:跳过的目录里没有源文件时不要啰嗦。"""
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "out.o").write_text("binary", encoding="utf-8")
+    (tmp_path / "a.py").write_text("import sys\n", encoding="utf-8")
+
+    _common.collect_files([str(tmp_path)], (".py",))
+
+    assert capsys.readouterr().err == ""
+
+
+def test_empty_skip_dirs_means_skip_nothing(tmp_path):
+    """skip_dirs=set() 表示什么都不跳过,不能静默回落成默认 SKIP_DIRS。
+
+    `skip_dirs or SKIP_DIRS` 里空集合是 falsy,会被 or 吃成默认值。
+    """
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "gen.py").write_text("import os\n", encoding="utf-8")
+
+    found = _common.collect_files([str(tmp_path)], (".py",), skip_dirs=set())
+
+    assert any(f.endswith("gen.py") for f in found)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 import pytest
@@ -229,6 +230,56 @@ def test_close_guard_prevents_index_error(tmp_path):
     findings = detect_cpp.collect([path], max_func=1)
 
     assert isinstance(findings, list)      # 不抛异常即通过
+
+
+def test_multiline_string_does_not_truncate_function_range(tmp_path):
+    """端到端:跨行字符串不能让函数区间变短。
+
+    只测 scan_lines 不够——function_defs 才是被深度带着走的那一层。
+    """
+    body = ("void Big::run(Node* p) {\n"
+            '    const char* sql = "SELECT *' + chr(92) + '\n'
+            'FROM t WHERE x = 1 } 0";\n'
+            + "\n".join(f"    x{i} = {i};" for i in range(10))
+            + "\n    return;\n}\n")
+    path = write_source(tmp_path, "multiline.cpp", body)
+
+    findings = detect_cpp.collect([path], max_func=5)
+
+    assert lines_of(findings, "golint/fnsize") == [1]
+
+
+def test_raw_string_does_not_create_phantom_function(tmp_path):
+    """端到端:raw string 里的函数体不能变成一条真的函数声明。"""
+    body = ("void Renderer::draw() {\n"
+            '    auto shader = R"glsl(\n'
+            "void main() {\n"
+            "    gl_Position = vec4(1.0);\n"
+            "}\n"
+            ')glsl";\n'
+            "    return;\n"
+            "}\n")
+    path = write_source(tmp_path, "shader.cpp", body)
+
+    findings = detect_cpp.collect([path])
+
+    # 只有 draw 一个函数;raw string 里的 main 不该被当成函数声明
+    assert "main" not in " ".join(f.message for f in findings)
+
+
+def test_extracted_function_name_is_always_a_valid_identifier():
+    """从签名里切出来的函数名必须永远是合法标识符。
+
+    变异测试实测:把名字那段正则从 `[A-Za-z_]` 开头改成允许数字开头后,
+    `void 9bad()` 会切出 `9bad`——一个数字开头的"函数名"。这条正则没有测试守。
+
+    这里断言的是**不变式**而不是单个输入:`re.search` 从尾部匹配,所以 `void 9bad`
+    现行会切出 `bad`(垃圾进垃圾出,但名字仍是合法的);真正要防的是切出非法标识符。
+    """
+    for sig in ("void f()", "void _ok()", "int Foo::bar(int a)",
+                "void 9bad()", "void f() const noexcept", "void g() &"):
+        name = detect_cpp._is_function_signature(sig)
+        assert name is None or re.fullmatch(r"[A-Za-z_]\w*", name), (sig, name)
 
 
 if __name__ == "__main__":

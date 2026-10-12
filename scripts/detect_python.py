@@ -88,11 +88,25 @@ def _own_complexity(fn: ast.AST) -> int:
 
 
 def _qualname(tree: ast.AST, fn: ast.AST) -> str:
+    """函数的限定名,例如 `Outer.method.inner`。
+
+    走**完整**祖先链,不是只找最外层 ClassDef:曾用"第一个包含它的类"就停,
+    于是类方法里的嵌套函数报成 `C.inner` 而不是 `C.m.inner`——两个不同函数
+    在报告里长得一模一样,按名字去找代码的人会找错。
+    """
     parts = [getattr(fn, "name", "<lambda>")]
+    chain: list[ast.AST] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and any(c is fn for c in ast.walk(node)):
-            parts.insert(0, node.name)
-            break
+        if not isinstance(node, (ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        if node is fn or any(c is fn for c in ast.walk(node)):
+            chain.append(node)
+    # 按定义处**倒序**取外层容器:insert(0, ...) 是往头部插,所以要先插最内层的
+    # (行号最大),外层的一次次提到最前面。正序会得到 m.C.inner 这种倒挂名字。
+    for node in sorted((c for c in chain if c is not fn),
+                       key=lambda n: n.lineno, reverse=True):
+        parts.insert(0, node.name)
     return ".".join(parts)
 
 
@@ -223,7 +237,13 @@ def pylint_findings(paths: list[str], max_line: int) -> list[Finding] | None:
             if finding is not None:
                 out.append(finding)
 
-    return out
+    # 只保留**我们真扫过的文件**的明细。_PYLINT_LINE 的 file 段是贪婪 `.+`,
+    # 任何长得像 `xxx:N:M: CODE: msg (sym)` 的行都会被当成一条发现;pylint 的输出
+    # 里除了明细还有 Module 头、评分脚注,以及某些配置下回显的源码行。按文件名
+    # 收口一次,phantom 发现就进不来——实测 pylint 4.1.2 的 text 输出会把传入的
+    # 路径原样回显,所以这个比对是可靠的。
+    scanned = {os.path.normpath(p) for p in paths}
+    return [f for f in out if os.path.normpath(f.file) in scanned]
 
 
 # Windows CreateProcess 的命令行上限是 32767 字符。一次性把全部文件路径传给
