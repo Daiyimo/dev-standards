@@ -84,8 +84,8 @@ def _pylint_installed() -> bool:
     return proc.returncode == 0
 
 
-def _write_sample(directory, body: str) -> str:
-    path = os.path.join(directory, "sample.py")
+def _write_sample(directory, body: str, name: str = "sample.py") -> str:
+    path = os.path.join(directory, name)
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(body)
     return path
@@ -586,6 +586,35 @@ def test_qualname_distinguishes_same_named_nested_functions():
              if isinstance(n, ast.FunctionDef)}
 
     assert {"a", "b", "a.x", "b.x"} <= names, names
+
+
+def test_pylint_findings_actually_batches(monkeypatch, tmp_path):
+    """pylint_findings 必须真分批调用,不是把全部路径一次性传给 pylint。
+
+    广谱变异扫描实测:把 `for batch in _path_batches(...)` 改成 `for batch in
+    [paths]`,全套测试照样绿——此前只有 _path_batches 自身的单测(它 monkeypatch
+    小了预算),没有一个用例走 pylint_findings 看它到底调了几次 subprocess。
+    """
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    # 预算要大于 pylint 基础命令本身(约 380 字符),否则每条路径都单独成批,
+    # 那是 _path_batches 对"单条就超预算"的既定行为,不是没分批。
+    budget = 700
+    monkeypatch.setattr(detect_python, "_CMDLINE_BUDGET", budget)
+    for i in range(6):
+        _write_sample(str(tmp_path), f"x{i} = 1\n", name=f"m{i}.py")
+
+    detect_python.collect([str(tmp_path)])
+
+    assert len(calls) > 1, f"只调用了 {len(calls)} 次 pylint，没有分批"
+    # 每一批的命令行都不能超预算
+    for cmd in calls:
+        assert detect_python._cmdline_len(cmd) <= budget, cmd
 
 
 def test_main_returns_2_when_no_python_files(tmp_path):

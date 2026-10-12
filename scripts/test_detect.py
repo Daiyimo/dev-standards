@@ -209,5 +209,51 @@ def test_collect_files_default_still_skips_build(tmp_path):
     assert not any(f.endswith("a.py") for f in found)
 
 
+def test_json_mode_returns_1_when_there_are_violations(monkeypatch):
+    """--json 有违规时退出码必须是 1,不能是 0。
+
+    广谱变异扫描实测:把 report() 的 JSON 分支改成恒返回 0,全套测试照样绿——
+    那条 return 只在 as_json=True 时走到,而此前只有文本路径的退出码有人守。
+    门禁用 --json 管道时会拿到"全绿"的假象。
+    """
+    fake = _FakeStdout()
+    monkeypatch.setattr(sys, "stdout", fake)
+
+    rc = _common.report([Finding("golint/fnsize", "a.cpp", 1, "函数 big")],
+                        as_json=True)
+
+    assert rc == 1
+
+
+def test_json_mode_returns_0_when_clean(monkeypatch):
+    """对照:--json 无违规时退出码是 0。"""
+    fake = _FakeStdout()
+    monkeypatch.setattr(sys, "stdout", fake)
+
+    assert _common.report([], as_json=True) == 0
+
+
+def test_cli_accepts_json_flag(tmp_path):
+    """命令行必须真的接受 --json。
+
+    广谱变异扫描实测:把 build_parser 里的 --json 参数删掉,全套测试照样绿——
+    现有 JSON 用例都直接调 _common.report(),没有一个走命令行解析。
+    """
+    write_source(tmp_path, "a.py", VIOLATING_PY)
+
+    assert detect.main(["--json", "--lang", "python", str(tmp_path)]) == 1
+
+
+def test_collect_files_accepts_a_file_path(tmp_path):
+    """传**文件**路径而不是目录时必须能被收下。
+
+    广谱变异扫描实测:把 collect_files 里 `os.path.isfile(path)` 那个分支删掉,
+    全套测试照样绿——所有用例都传目录。detect.py <单文件> 会直接报"没有源文件"。
+    """
+    path = write_source(tmp_path, "solo.py", "x = 1\n")
+
+    assert _common.collect_files([path], (".py",)) == [path]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

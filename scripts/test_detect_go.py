@@ -289,5 +289,41 @@ def test_struct_with_interface_named_field_is_not_an_interface(tmp_path):
     assert "I" in iface_msgs, findings
 
 
+def test_package_comment_found_when_not_on_first_line(tmp_path):
+    """`package` 不在第一行时也要找得到它，从而判断有没有包注释。
+
+    Go 文件经常以 `//go:build` 约束开头。曾用 `rows[:1]` 变异实测:只扫第一行时
+    根本找不到 package 行，于是"有没有包注释"这件事整个没被检查——广谱扫描里
+    没人守的一条。
+
+    注意断言方向：这里包注释是**缺失**的，所以正确实现必须报 `golint/package`；
+    只扫第一行的实现反而一条不报。样本不能反过来写（有包注释时两种实现都不报，
+    测不出差别）。
+    """
+    src = ("//go:build linux\n"
+           "\n"
+           "package sample\n"
+           "\n"
+           "func Do() {}\n")
+    path = write_source(tmp_path, "tagged.go", src)
+
+    findings = detect_go.collect([path])
+
+    assert "golint/package" in rules_of(findings), findings
+
+
+def test_language_cli_accepts_json(tmp_path):
+    """Go 入口的命令行必须真的接受 --json。
+
+    build_parser 是 Go / C++ 入口共用的参数构造器。广谱变异扫描实测:把里面的
+    --json 参数删掉,全套测试照样绿——现有 JSON 用例都直接调 _common.report()
+    或走 detect.py,没有一个走 Go / C++ 自己的命令行解析。detect.py 自己构造
+    parser,不走 build_parser,所以那条路测不到这个函数。
+    """
+    write_source(tmp_path, "a.go", "package sample\n\nfunc Do() {}\n")
+
+    assert detect_go.main(["--json", str(tmp_path)]) == 1
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
