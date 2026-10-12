@@ -90,7 +90,14 @@ def _is_function_signature(sig: str) -> str | None:
     if RE_CONTROL.match(text) or RE_NON_FUNC_HINT.match(text):
         return None
     if not text.endswith(")"):
-        if not re.search(r"\)\s*(?:const|noexcept|override|final)?\s*$", text):
+        # 尾部修饰符可以**任意多个**并列:const noexcept、const override、
+        # noexcept override、const volatile、& / && 引用限定符都是常见组合。
+        # 曾写成 (?:...)? 只允一个,于是 `void f() const noexcept` 整条判不出是
+        # 函数——function_defs 直接返回 [],golint/fnsize 和 BackwardNull 双双
+        # 漏检,而这是极常见的成员函数写法。
+        if not re.search(r"\)\s*(?:const|volatile|noexcept|override|final|&|&&)"
+                         r"(?:\s*(?:const|volatile|noexcept|override|final|&|&&))*"
+                         r"\s*$", text):
             return None
     paren = text.rfind("(")
     if paren <= 0:

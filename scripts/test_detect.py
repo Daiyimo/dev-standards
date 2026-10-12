@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # pylint: disable=wrong-import-position
 import _common  # noqa: E402
 import detect  # noqa: E402
+import detect_python  # noqa: E402
 from _common import Finding  # noqa: E402
 from _testhelpers import write_source  # noqa: E402
 
@@ -68,9 +69,11 @@ def test_known_rule_name_still_filters(tmp_path):
 
 
 def test_known_rules_matches_registry():
-    """KNOWN_RULES 要和 references/standards-registry.md 第 1 节对得上。
+    """KNOWN_RULES 要和 references/standards-registry.md 第 1 节**相等**。
 
-    校验用的是这份集合;它和注册表漂移时,--rules 会把合法规则名判成非法。
+    校验用的是这份集合;它和注册表漂移时,--rules 会把合法规则名判成非法(或少校验一类)。
+    用相等而不是子集:只查"注册表 ⊆ KNOWN_RULES"时,注册表新增一条规则而 KNOWN_RULES
+    没跟上,测试照样绿——而那条规则随后就筛不动。
     """
     registry = os.path.normpath(os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
@@ -79,11 +82,13 @@ def test_known_rules_matches_registry():
         pytest.skip("找不到 standards-registry.md")
     with open(registry, encoding="utf-8") as handle:
         text = handle.read()
-    table = text.split("## 1. 规则注册表")[1].split("##")[0]
+    table = text.split("## 1. 规则注册表")[1].split("## ")[0]
     listed = {line.split("`")[1] for line in table.splitlines()
               if line.startswith("| `")}
 
-    assert listed <= detect.KNOWN_RULES, listed - detect.KNOWN_RULES
+    assert listed == detect.KNOWN_RULES, (
+        f"只在 registry: {sorted(listed - detect.KNOWN_RULES)}; "
+        f"只在 KNOWN_RULES: {sorted(detect.KNOWN_RULES - listed)}")
 
 
 def test_auto_mode_returns_2_when_no_source_files(tmp_path):
@@ -125,6 +130,83 @@ def test_text_output_does_not_touch_stdout_buffer(monkeypatch):
 
     assert fake.buffer.getvalue() == b""
     assert fake.written, "文本明细没走 print()"
+
+
+def test_detector_crash_returns_2_not_1(monkeypatch, tmp_path):
+    """检测器自身抛异常时必须返回 2,不能和"有违规"共用 1。
+
+    实测曾让 main() 直接向上抛 RuntimeError,CLI 退出码是 1——一个崩掉的检测器
+    和一份几千条的违规清单返回同一个码,门禁把"没查完"当成"查过了"。
+    """
+    write_source(tmp_path, "a.py", VIOLATING_PY)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated detector crash")
+
+    monkeypatch.setattr(detect_python, "collect", boom)
+
+    assert detect.main(["--lang", "python", str(tmp_path)]) == 2
+
+
+def test_finish_also_maps_crash_to_2(monkeypatch, tmp_path):
+    """三个语言入口共用的 finish() 也要把崩溃转成 2。"""
+    write_source(tmp_path, "a.py", VIOLATING_PY)
+
+    def boom(*args, **kwargs):
+        raise ValueError("simulated crash")
+
+    monkeypatch.setattr(detect_python, "collect", boom)
+
+    assert detect_python.main([str(tmp_path)]) == 2
+
+
+def test_json_survives_broken_pipe(monkeypatch):
+    """读端提前走掉(--json | head)不能吐 traceback。
+
+    实测 1200 文件项目 `detect.py --json | head -c 20` 三次全抛 BrokenPipeError,
+    stderr 500+ 字节 traceback。第一轮把 payload 合并成单次 write 后更容易触发。
+    """
+
+    class _BrokenStdout:
+        class buffer:
+            @staticmethod
+            def write(_payload):
+                raise BrokenPipeError("reader went away")
+
+            @staticmethod
+            def flush():
+                pass
+
+        def fileno(self):
+            raise ValueError("no fd")
+
+    monkeypatch.setattr(sys, "stdout", _BrokenStdout())
+
+    assert _common.report([Finding("golint/fnsize", "a.cpp", 1, "函数 big")],
+                          as_json=True) == 1
+
+
+def test_collect_files_empty_skip_dirs_means_skip_nothing(tmp_path):
+    """skip_dirs=set() 表示什么都不跳过,不能静默回落成默认 SKIP_DIRS。
+
+    `skip_dirs or SKIP_DIRS` 里空集合是 falsy,会被 or 吃成默认值。
+    """
+    (tmp_path / "build").mkdir()
+    write_source(tmp_path / "build", "a.py", "x = 1\n")
+
+    found = _common.collect_files([str(tmp_path)], (".py",), skip_dirs=set())
+
+    assert any(f.endswith("a.py") for f in found)
+
+
+def test_collect_files_default_still_skips_build(tmp_path):
+    """对照:不传 skip_dirs 时 build/ 仍然要跳过。"""
+    (tmp_path / "build").mkdir()
+    write_source(tmp_path / "build", "a.py", "x = 1\n")
+
+    found = _common.collect_files([str(tmp_path)], (".py",))
+
+    assert not any(f.endswith("a.py") for f in found)
 
 
 if __name__ == "__main__":

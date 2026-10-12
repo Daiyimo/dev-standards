@@ -27,6 +27,7 @@ dev-standards/
 ├── SKILL.md                    # 轻量主规则，功能优先；第 13 节是执行层
 ├── README.md                   # 使用和安装说明
 ├── CHANGELOG.md                # 规范演进记录
+├── .gitignore                  # 排除 __pycache__ / .pytest_cache / 评审临时目录
 ├── install.sh                  # 一键安装 / 更新（幂等）
 ├── uninstall.sh                # 一键卸载
 ├── scripts/                    # 第 13 节执行层的检测器（只检测，不修改代码）
@@ -76,11 +77,13 @@ python -m pytest scripts/ -q
 
 | 语言 | 覆盖的规则 | 边界 |
 | --- | --- | --- |
-| Python | `broad-except`、`line-too-long`、`unused-variable`、`unused-import`、`ccn` | 需要 pylint；装不上自动退回内置 AST 检测（只剩行宽 + CCN） |
-| Go | `golint/package`、`funccomment`、`structcomment`、`interfacecomment`、`varcomment`、`tosa/linelength`、`golint/fnsize` | 轻量行扫描器，假设代码经过 gofmt。项目有 golangci-lint / revive 时以它们为准 |
-| C/C++ | `tosa/linelength`、`golint/fnsize`、`BackwardNull` | `BackwardNull` 只报候选，已排除“判空后提前返回”这一安全惯用法，必须人工确认 |
+| Python | `broad-except`、`line-too-long`、`unused-variable`、`unused-import`、`ccn`、`error` | 需要 pylint；装不上自动退回内置 AST 检测（只剩行宽 + CCN + error） |
+| Go | `golint/package`、`funccomment`、`structcomment`、`interfacecomment`、`varcomment`、`tosa/linelength`、`golint/fnsize`、`error` | 轻量行扫描器，假设代码经过 gofmt。项目有 golangci-lint / revive 时以它们为准 |
+| C/C++ | `tosa/linelength`、`golint/fnsize`、`BackwardNull`、`error` | `BackwardNull` 只报候选，已排除“判空后提前返回”这一安全惯用法，必须人工确认 |
 
-源文件编码按 UTF-8 → GBK → latin-1 顺序探测。按 UTF-8 硬解 + `errors="replace"` 会让 GBK 中文每字变成两个 U+FFFD、行宽翻倍——实测一条真实 94 字符的 C++ 行被判成 154 字符。
+`error` 不是某条规范，是检测器自报的“这个文件读不了 / 解析失败”。它在三个检测器里都会产出，**最该被看见**，所以单列说明：按 registry 的规则名用 `--rules` 筛的时候，如果只想看规范违规而要排除它，就显式排除，别指望它不在。
+
+源文件编码按 UTF-8 → GBK → latin-1 顺序探测。按 UTF-8 硬解 + `errors="replace"` 会让 GBK 中文每字变成两个 U+FFFD，行宽按字符数一算就虚高——实测一条真实 94 字符的 C++ 行被判成 154 字符。
 
 ### 已知边界
 
@@ -88,23 +91,28 @@ python -m pytest scripts/ -q
 - CCN 检测是 Python AST 实现，只适用于 Python。
 - `detect_go.py` 不是 Go 解析器，是行扫描器；遇到非常规格式可能漏报。
 - `detect_cpp.py` 的 `BackwardNull` 是候选级，不能替代 clang-tidy 之类的分析器。
-- C++ 侧：单行函数体（`int f() { return 0; }`）不被识别、构造函数初始化列表的函数名取到最后一个初始化成员、多后缀签名（`const noexcept override`）漏检、fnsize 起点把函数上方的文档注释块算进去、嵌套成员函数与外层函数区间重叠时同一条报两遍。
-- `SKIP_DIRS` 里的 `build` / `dist` / `vendor` / `testdata` 被无提示跳过；源码放在这些目录下的项目会少扫一批文件而退出码不变。
-- Windows 下把输出重定向到文件或管道时，Python 按本地代码页编码（简体中文环境是 cp936），按 UTF-8 读会乱码，`--json` 尤其明显；直接看控制台不受影响（走 `WriteConsoleW`）。需要管道或落盘时设 `PYTHONIOENCODING=utf-8`，或先 `chcp 65001`。检测器读源文件不受此影响——它自己探测编码。
+- C++ 侧：单行函数体（`int f() { return 0; }`）不被识别、构造函数初始化列表的函数名取到最后一个初始化成员、多后缀签名（`const noexcept override`）漏检。**文档注释不会算进 fnsize**——实测五种形态（无注释 / 单行 `/** */` / 多行 / `//` / 注释后空行）函数规模都是 5 行，`_signature_start` 停在签名首行。
+- Windows 下把输出重定向到文件或管道时，Python 按本地代码页编码（简体中文环境是 cp936），按 UTF-8 读会乱码；直接看控制台不受影响（走 `WriteConsoleW`）。需要管道或落盘时设 `PYTHONIOENCODING=utf-8`，或先 `chcp 65001`。检测器读源文件不受此影响——它自己探测编码。
 
 ### 已知缺陷（已复现，未修）
 
-当门禁用之前先知道这几条，它们都往“漏报 + 退出码不变”方向坏：
+当门禁用之前先知道这几条，它们都往“漏报 / 误报 + 退出码不变”方向坏：
 
-- **C++ raw string 破坏花括号深度。** 扫描器不识别 C++11 的 `R"(...)"`，字符串里的 `{` 被计入深度，实测报出 phantom 函数（函数名来自字符串内部）且真实函数区间被拉到 EOF。修它要改 `_common.scan_lines` 的词法状态机，而那套状态机同时服务 Go 与 C++，改动面大于其余几条，故留待单独一次整改。
+- **C++ 跨行字符串破坏花括号深度。** `_common.scan_lines` 的 `in_string` 是**每行局部变量**，不跨行延续（而 `in_block_comment` 跨行）。于是两种写法都会让深度失真：
+  - C++11 raw string `R"( ... { ... )"` —— 字符串里的 `{` 被计入深度，实测报出 phantom 函数（函数名来自字符串内部）且真实函数区间被拉到 EOF；
+  - 普通的反斜杠续行字符串 `const char* s = "abc\` 换行 `def } ghi";` —— 同理，实测 5 行函数被截成 3 行。
+
+  两条同根，修任一条都要改 `scan_lines` 的词法状态机，而它同时服务 Go 与 C++，改动面大于其余几条，故留待单独一次整改。
 - **`SKIP_DIRS` 被无提示跳过。** `build` / `dist` / `vendor` / `testdata` 等目录下的源文件不扫，退出码不变——和上面那条是同一种坏法（少查一批文件而门禁看不出），只是触发条件是目录名而不是文件内容。
+- **pylint 输出里的源码行可能被误判成明细。** `_PYLINT_LINE` 的 file 段是贪婪 `.+`，而 pylint 在 duplicate-code（R0801）里会回显源码行；那一行里只要出现 `xxx:N:M: CODE: msg (sym)` 的形状就会被当成一条真发现。与行尾字符无关，是解析判据太宽。
 
 已修（曾经的已知缺陷，修复均有测试守住，回退即变红）：pylint 分批（Windows 命令行超长时曾静默丢三条规则且退出码 0）、裸 `except:` 漏报、`str.splitlines()` 断行偏移、`--rules` 传不存在规则名返回 0、`--json` 重定向后不是 UTF-8、顶层 Go 接口被报成 `structcomment`。
 
-## 两种模式
+## 三种工作方式
 
 - **功能模式（默认）**：只检查与当前改动直接相关的风险，不输出完整合规清单。
 - **严格复核模式**：仅在用户明确要求完整合规、发布前、安全或性能审计时使用，并限制在用户指定范围。
+- **执行层（第 13 节）**：用户给出项目路径要求合规整改时，由 `scripts/detect.py` 检测、按七步流程整改并复检。见上面「检测器」一节。
 
 ## 安装 / 更新 / 卸载
 

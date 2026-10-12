@@ -117,6 +117,13 @@ def main(argv: list[str] | None = None) -> int:
             # 遍历之间文件消失了。不能静默跳过——那又是一次"没查"报成"没问题"。
             print(f"detect: {lang}: {exc}", file=sys.stderr)
             return 2
+        except Exception as exc:  # pylint: disable=broad-except
+            # 顶层兜底,理由同 _common.finish:检测器自身出错必须返回 2,
+            # 不能和"有违规"共用退出码 1。不收窄——这里任何异常都只应记为
+            # 检测失败,具体异常面无法预判。
+            print(f"detect: {lang}: 检测器自身出错"
+                  f"({type(exc).__name__}: {exc})", file=sys.stderr)
+            return 2
 
     if wanted:
         findings = [f for f in findings if f.rule in wanted]

@@ -11,6 +11,8 @@
 
 ### Added
 
+- **第二轮复核补上 19 条回归测试（56 → 75 条）**，全部对准“删掉没人发现”的点。第一轮留下的 5 条无测试规则这次补齐：`unused-variable`、`unused-import`、`golint/package`、Go 与 C++ 各自的 `golint/fnsize`——此前把整条规则关掉，56 条测试照样全绿。另补：`_own_complexity` 的基数 1（此前没有任何用例断言过具体 CCN 数值）、Go `type (...)` 分组块整支、Go 分组关闭侧的 depth 门槛、C++ `close < fend` 夹紧、`split_lines` 的另外两个调用点（AST 行宽与 pylint 输出解析）、`--max-line-length` 是否真传给 pylint、`skip_dirs=set()` 语义。
+- **`install.sh` 本地同步排除生成物与暂存目录**：此前 `tar --exclude=.git` 会把工作树里的评审临时目录、`__pycache__`、`.pytest_cache` 一并装进已安装副本——既污染 skill，也让“自扫固定 1 处 ccn”这类基线失效。`.gitignore` 同步补 `.review_tmp/`。
 - **`scripts/test_detect.py`**：入口层回归测试，补上此前完全裸奔的一格——`detect.py` 是 README 说的“唯一入口”，但四个 test_detect_*.py 没有一个 import 它。实测把 `detect_languages` 改成恒返回 `[]`、把 `--rules` 过滤整段删掉，旧 41 条测试照样全绿。新文件守 auto 语言判别、`--rules` 过滤与未知规则名、`--json` 编码、退出码 2 在入口层的映射，以及 `KNOWN_RULES` 与注册表不漂移。
 - **异常收窄前先查被调方的真实异常面**：第九章新增两条——收窄 `except` 前必须读被调实现确认它抛什么，查不清就保留宽捕获；有意的宽捕获用禁用注释加一行理由显式声明，不硬收窄成看似具体的类型。
 
@@ -23,7 +25,7 @@
 - **附录 D、静态扫描告警的修复规范**：新增 `references/lint-remediation.md`，覆盖五步——用原始报告并对齐行号/扫描配置基线、收窄前追踪异常面、区分“可收窄”与“有意的宽捕获”、验证修复本身（前后按规则聚合计数对比 + 行为等价）、以及范围外告警的显式报告。附录只处理报告已出现后的补救，预防规则指向主文件第六/九章与完成前检查。
 - **工作区规则已同步出常驻副本**：本次第六/九章新增条款已精简落进工作区 `CLAUDE.md` 第五节下的「常驻铁律 · 扫描卫生」四条，作为不依赖本 skill 加载的常驻生效副本；后续改动这两章时须同步该处（延续 1.0.1 建立的同步约定）。
 - **执行层（第 13 节）：检测与整改**：用户给出项目路径要求“按规范整理 / 弄合规 / 统一风格 / 过一遍扫描规范”时，由 `scripts/detect.py` 自己检测，再按七步流程（检测 → 落配置 → 分类分批 → 逐批修 → 行为验证 → 复检 → 汇报）整改并复检。触发条件同步写成 frontmatter `description` 的第三类，并明确“仅给出项目路径而未要求合规时不激活”，免得和第一类（复核）互相误触发。
-- **`scripts/` 检测器**：Python / Go / C++ 三栈，56 条回归测试。退出码 0 无违规、1 有违规、2 自身出错——没有源文件、`--rules` 传了规则表外的名字、检测器自身抛异常，三种都返回 2（没查到不等于合规，门禁靠这个区分）。规则名按符号名归一化，pylint 2.x 的 `broad-except`（W0703）与 3.x/4.x 的 `broad-exception-caught`（W0718）都收，换版本不失效。
+- **`scripts/` 检测器**：Python / Go / C++ 三栈，75 条回归测试。退出码 0 无违规、1 有违规、2 自身出错——没有源文件、`--rules` 传了规则表外的名字、检测器自身抛异常，三种都返回 2（没查到不等于合规，门禁靠这个区分）。规则名按符号名归一化，pylint 2.x 的 `broad-except`（W0703）与 3.x/4.x 的 `broad-exception-caught`（W0718）都收，换版本不失效。
 - **`references/standards-registry.md`**：规则注册表，每条规则的阈值、检测方式、可靠度与覆盖边界；合并新规范的落点。附检测能力边界表与从真实扫描表读出的过程性结论（告警跨轮次累积、定级与修复成本倒挂、报告条数会骗人）。
 - **`references/ccn-splitting.md`**：高圈复杂度拆分手册——McCabe 口径校准（与平台偏差几个点，排序与分档可信、绝对值不争）、按职责切、helper 返回窄类型 + 哨兵、三态返回压平嵌套、8 条保真清单、差分测试。
 - **附录 D 补 D.6~D.11**：行宽按语法边界重排（只改确实超限的行）、死代码分“真死”与“成组计算的一员”、C/C++ 空指针候选的人工确认、Go 导出符号补注释顺序、函数规模不删注释凑行数，以及常见借口对照表。
@@ -47,11 +49,21 @@
 - **README 维护原则同步**：明确默认安装路径从 GitHub 拉取，并补充本地同步用法。
 - **`detect_python.py` 关于 `--dummy-variables-rgx` 的依据是错的，已改正。** 原文声称 `^_+$` 是“显式钉住 pylint 4.1.2 的默认值”，实测 4.1.2 的真实默认是 `_+$|(_[a-zA-Z0-9_]*[a-zA-Z0-9]+?$)|dummy|^ignored_|^unused_`。实际效果是检测器**比 pylint 默认更严**（`_unused` / `_idx` 也会报），意图可能没错，但理由写错了，且会造成“检测器与项目自己的 pylint 配置结论不一致”。
 - **`_declaration_findings` 拆出 `_func_size_finding`**：补顶层接口判据时把前者的圈复杂度顶到了阈值（实测 20），而“这个函数几行”本来就是一个独立问题。
-- **README 已知缺陷清单从 5 条收到 2 条**：修掉的 6 条移入“已修”并注明均有测试守住；`SKIP_DIRS` 静默跳过从“已知边界”移进缺陷清单——它和剩下那条是同一种坏法（少查一批文件而退出码不变），读门禁的人容易只看见缺陷清单。C++ raw string 明确标注“待单独整改”及原因（要改 Go/C++ 共用的词法状态机，改动面大于其余几条）。
+- **README 已知缺陷清单从 5 条收到 2 条**：原清单 5 条里修掉 4 条（剩 C++ 跨行字符串），另 2 条修掉的是本轮复核**新发现**的（顶层 Go 接口串名、`--json` 编码——后者原先只写在“已知边界”里，没进缺陷清单）；`SKIP_DIRS` 静默跳过从“已知边界”移进缺陷清单补位。5 − 4 + 1 = 2。第二轮又新增 2 条（见下面“README 已知缺陷清单新增 2 条”）。
 - **退出码 2 的情形补齐为三种**：没有源文件、`--rules` 未知规则名、检测器自身抛异常。README 与 SKILL.md 第 13 节同步。
+- **README 已知缺陷清单新增 2 条、删除 1 条**：新增“pylint 输出里的源码行可能被误判成明细”（`_PYLINT_LINE` 的 file 段是贪婪 `.+`，而 pylint 在 R0801 里会回显源码行）和“C++ 普通反斜杠续行字符串同样破坏花括号深度”（与 raw string 同根因，此前只记了后者）；删掉“fnsize 起点把文档注释算进去”——实测五种形态函数规模都是 5 行，该描述不成立，且会诱导人做 D.10 禁止的“删注释凑行数”。
+- **`error` 伪规则补进 registry 与 README**：三个检测器都会产出它，但它只活在代码注释里，用户文档三处都没有——按 registry 规则名用 `--rules` 筛时会把它静默滤掉，而那正是最该报的一类。registry 新增第 2 节专门说明。
+- **`KNOWN_RULES` 与 registry 的断言从子集收紧为相等**：原来只查“registry ⊆ KNOWN_RULES”，方向反了——`KNOWN_RULES` 多一条假规则时测试全绿。顺带把 registry 补到 14 条，两边真正对齐。
+- **CLAUDE.md 三处措辞**：“与上一节的关系”指错方向（自指第 5 位）；B 类“拿不准按可能触发”与 A 类“拿不准默认不启用”并读像矛盾，补了限定（前者只指是否触及风险边界）；“第六/九章”改“第六/九节”，与 SKILL.md 一致。
 
 ### Fixed
 
+- **`detect_cpp.py` 只允许一个尾部修饰符，常见 C++ 函数整条漏检。** 正则是 `(?:const|noexcept|override|final)?`，只匹配**一个**关键字，于是 `void f() const noexcept`、`const override`、`noexcept override`、`const volatile` 全部判不出是函数——`function_defs` 直接返回 `[]`，`golint/fnsize` 和 `BackwardNull` 双双漏检。这是极常见的成员函数写法，影响面比已记录的 raw string 更大。改为允许任意多个并列（含 `&` / `&&` 引用限定符）。
+- **检测器自身抛异常时退出码是 1 而不是 2。** 上一轮把“三种情形返回 2”写进了 README / SKILL.md / CHANGELOG 三处，但实现只有两种：异常一路穿透 `main()`，CLI 退出码 1——一个崩掉的检测器和一份几千条的违规清单共用一个码。在 `detect.py` 与 `_common.finish()` 各加一层顶层兜底（附录 D 里“顶层兜底”那类有意的宽捕获，理由写在 pragma 上方）。
+- **`--json | head` 在大项目上必吐 traceback。** JSON 分支只接 `AttributeError`，读端提前走掉时抛 `BrokenPipeError`，实测 1200 文件项目 3/3 复现、stderr 500+ 字节。改为接住 `BrokenPipeError` / `OSError` / `ValueError` 并把 fd 指向 devnull（避开 Python 退出时再刷一次的那个 "Exception ignored"）。
+- **同一个语法错误文件报两条 `error`。** pylint 的 E0001 与 AST 的 SyntaxError 各报一条，一个坏文件算成“2 处违规”。改为 pylint 已报过的文件不再重复报。
+- **`skip_dirs or SKIP_DIRS` 的空集合陷阱。** `skip_dirs=set()` 是 falsy，会被 `or` 静默回落成默认值，“我想什么都不跳过”表达不出来。改为 `is None` 判断。
+- **`detect_python.py` docstring 宣传了不存在的 `--ccn-only` 参数。**
 - **Windows 上项目够大时 pylint 起不来，三条规则静默丢失且退出码 0。** 文件列表一次性传给 pylint，命令行超过 Windows 的 32767 字符上限时抛 `WinError 206`，被当作“pylint 不可用”回退到内置 AST。实测 500 文件 + 深路径（命令行总长 36247）→ 0 条明细、退出码 0；同一项目用相对路径（32747）→ 1000 条、退出码 1。改为按 `_CMDLINE_BUDGET` 分批调用。**判据是命令行总长，不是文件数**——路径深时两百多个文件就触发。
 - **裸 `except:` 漏报。** `PYLINT_ALIASES` 没有 `bare-except`（W0702），pylint 本身会报，归一化时被当成范围外规则丢掉——宽捕获里最宽的一种反而不报。
 - **顶层 Go 接口被报成 `golint/structcomment`。** `_declaration_findings` 的顶层 `type` 分支硬编码了 `structcomment`，而分组内的 `_group_spec_finding` 判据是对的。后果是按规则名筛时 `--rules golint/interfacecomment` 一条都筛不到。
@@ -61,7 +73,16 @@
 
 ### 变异验证
 
-每个修复都回退一次，确认对应测试真的变红——测试自己通过不算证据。验证脚本用完即删，结果记在这里：
+每个修复都回退一次，确认对应测试真的变红——测试自己通过不算证据。两轮各跑一遍，脚本用完即删。
+
+**第二轮：18 个修复逐个回退，18/18 变红。** 覆盖本轮全部代码修复（C++ 多修饰符、C++/Go fnsize、close 夹紧、Go 包注释、Go type 分组、Go 分组关闭侧门槛、unused-import / unused-variable 别名、CCN 基数、error 去重、另两个 `split_lines` 调用点、`--max-line-length` 透传、崩溃转退出码 2、JSON 接 BrokenPipe、`skip_dirs` 语义）。
+
+过程中抓到两个**测试自身**的漏洞，都已补：
+
+- `test_close_guard_prevents_index_error` 最初的样本复现不出崩溃——右花括号被注释吃掉时，函数末尾的 `}` 仍会把 depth 拉回基线，`close` 根本不会走过头。换成“函数自己的 `}` 也被注释吃掉”后才复现 IndexError。
+- `test_pylint_output_parsing_survives_form_feed` 最初的样本抓不到回归：`\x0c` 后半截不像一条明细时，两种切法的发现数相同。改成“`\x0c` 两侧各放一条格式完整的明细”后才可区分（1 条 vs 2 条）。
+
+**第一轮：6 个修复逐个回退，6/6 变红。**
 
 | 回退的修复 | 测试反应 |
 | --- | --- |
@@ -72,7 +93,7 @@
 | `--json` 改回 `print()` | RED |
 | `_CMDLINE_BUDGET` 调到上限之上 | RED |
 
-过程中变异验证抓到两个**测试自身**的漏洞，都已补：`test_split_lines_*` 只测 helper 本身，调用方换回 `splitlines()` 时照样全绿（补 `test_scan_lines_row_count_not_inflated_by_form_feed`）；分批逻辑的测试把 `_CMDLINE_BUDGET` monkeypatch 小了，默认值被改坏它一条都不红（补 `test_default_cmdline_budget_is_below_windows_limit`）。
+第一轮同样抓到两个测试自身的漏洞：`test_split_lines_*` 只测 helper 本身，调用方换回 `splitlines()` 时照样全绿（补 `test_scan_lines_row_count_not_inflated_by_form_feed`）；分批逻辑的测试把 `_CMDLINE_BUDGET` monkeypatch 小了，默认值被改坏它一条都不红（补 `test_default_cmdline_budget_is_below_windows_limit`）。
 
 ## [2.0.0] — 2026-09-02
 

@@ -3,7 +3,7 @@
 
 用法:
     python detect_python.py <路径...> [--max-line N] [--ccn-threshold N]
-                             [--rules a,b,c] [--ccn-only] [--no-pylint] [--json]
+                             [--rules a,b,c] [--no-pylint] [--json]
 
 输出每行一条: <规范规则名>\\t<文件>:<行>\\t<说明>
 退出码: 0 = 无违规, 1 = 有违规, 2 = 自身错误(含路径下没有 .py 文件)
@@ -284,13 +284,20 @@ def collect(paths: list[str], max_line: int = 120, ccn_threshold: int = 20,
             use_pylint = False
         else:
             findings.extend(pylint_result)
+    # pylint 已经为这些文件报过 error(E0001/F0001)了。AST 那条路会为同一个
+    # 语法错误再报一条,于是一个坏文件算成"2 处违规"——条数对不上,且看着像两个问题。
+    pylint_error_files = ({os.path.normpath(f.file) for f in findings
+                           if f.rule == "error"} if use_pylint else set())
     for path in files:
-        # pylint 已覆盖行宽;CCN 只有 AST 能算,补上。error 也要留下:
-        # pylint 在时它自己报 E0001/F0001,不在时只有 AST 这条路径能发现
-        # 读不了或语法错误的文件。
+        # pylint 已覆盖行宽;CCN 只有 AST 能算,补上。pylint 在时它自己报
+        # E0001/F0001,不在时只有 AST 这条路径能发现读不了或语法错误的文件——
+        # 所以 error 也要留,但只留给 pylint 没报过的文件。
         findings.extend(
             f for f in ast_findings(path, max_line, ccn_threshold)
-            if not use_pylint or f.rule in ("ccn", "error")
+            if not use_pylint
+            or f.rule == "ccn"
+            or (f.rule == "error"
+                and os.path.normpath(path) not in pylint_error_files)
         )
 
     if rules:

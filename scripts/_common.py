@@ -73,8 +73,21 @@ def report(findings: list[Finding], as_json: bool = False,
             sys.stdout.buffer.write(payload.encode("utf-8") + b"\n")
             sys.stdout.buffer.flush()
         except AttributeError:
-            # stdout 被换成没有 .buffer 的对象(测试替身、某些重定向环境)
+            # stdout 被换成没有 .buffer 的对象(测试替身、被 wrapper 包住的输出)。
+            # 这时候写不出字节,只能退回文本层;但那样就回到了本地代码页,所以必须
+            # 留一行 stderr 说明,不能让"保证 UTF-8"静默降级。
+            print("detect: stdout 没有 buffer,--json 无法保证 UTF-8 输出",
+                  file=sys.stderr)
             print(payload)
+        except (BrokenPipeError, OSError, ValueError):
+            # 读端已经走了(detect.py --json | head)。这不是我们的输出出错,
+            # 不该吐 traceback;按原退出码结束即可。Python 退出时还会再刷一次
+            # stdout,那时再报一次 BrokenPipeError 会被解释器吞掉并打
+            # "Exception ignored" —— 先把 fd 指向 devnull 避开它。
+            try:
+                os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+            except (OSError, ValueError):
+                pass
         return 1 if findings else 0
 
     for f in sorted(findings, key=lambda x: (x.rule, x.file, x.line)):
@@ -107,6 +120,15 @@ def finish(collect: Callable[[], list[Finding]], label: str,
         findings = collect()
     except NoSourceFiles as exc:
         print(f"{label}: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # pylint: disable=broad-except
+        # 这是顶层兜底:检测器自身崩了(解析器缺陷、没预料到的文件形态)时,
+        # 必须和"发现违规"区分开——否则一个崩掉的检测器和一份 5000 条的违规
+        # 清单返回同一个退出码 1,门禁把"没查完"当成"查过了"。
+        # 不收窄:这里正是"任何异常都只应记为检测失败,不是让 traceback 冲到
+        # 调用方面前"的边界,具体异常面无法预判。
+        print(f"{label}: 检测器自身出错({type(exc).__name__}: {exc})",
+              file=sys.stderr)
         return 2
     return report(findings, as_json, label=label)
 
@@ -286,7 +308,10 @@ def read_source(path: str) -> str:
 def collect_files(paths: list[str], suffixes: tuple[str, ...],
                   skip_dirs: set[str] | None = None) -> list[str]:
     """按后缀收集源文件。paths 里的文件直接收,目录递归。"""
-    skip = skip_dirs or SKIP_DIRS
+    # 用 is None 判,不用 `or`:`skip_dirs=set()` 是 falsy,`or` 会让它静默回落成
+    # 默认 SKIP_DIRS,"我想什么都不跳过"这个意图表达不出来。当前没有调用方传空集合,
+    # 但这是个踩上去才知道的坑。
+    skip = SKIP_DIRS if skip_dirs is None else skip_dirs
     out: list[str] = []
     for path in paths:
         if os.path.isfile(path):

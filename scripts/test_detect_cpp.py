@@ -159,5 +159,77 @@ def test_main_returns_2_when_no_cpp_files(tmp_path):
     assert detect_cpp.main([str(tmp_path)]) == 2
 
 
+# 尾部修饰符任意多个并列:const noexcept / const override / noexcept override 都是
+# 常见成员函数写法。曾因正则只允许一个关键字,这些函数整条判不出是函数。
+MULTI_SUFFIX = """\
+void Big::step(int a) const noexcept
+{
+    int x0 = 0;
+    int x1 = 1;
+    int x2 = 2;
+    return;
+}
+
+void Small::tick() const override
+{
+    return;
+}
+"""
+
+
+def test_multiple_trailing_qualifiers_are_still_functions(tmp_path):
+    """const noexcept / const override 必须认得出是函数。
+
+    曾写成 `(?:const|noexcept|override|final)?`——只允**一个**关键字,于是
+    `void f() const noexcept` 整条判不出是函数,function_defs 直接返回 [],
+    golint/fnsize 和 BackwardNull 双双漏检。这是极常见的成员函数写法,
+    影响面比已记录的 raw string 更大。
+    """
+    path = write_source(tmp_path, "multi.cpp", MULTI_SUFFIX)
+
+    findings = detect_cpp.collect([path], max_func=6)
+
+    names = {f.message.split(" ")[1] for f in findings if f.rule == "golint/fnsize"}
+    assert "step" in names, findings
+    assert "tick" not in names          # 3 行,不超 max_func=6
+
+
+def test_cpp_fnsize_rule_can_be_reported(tmp_path):
+    """C++ 的 golint/fnsize 本身要能报出来。
+
+    变异测试实测:把 detect_cpp 里的 fnsize 分支整段关掉,56 条测试照样全绿——
+    这条规则处于"删了没人发现"状态。这条用例补上那个洞。
+    """
+    body = "\n".join(f"    x{i} = {i};" for i in range(20))
+    path = write_source(tmp_path, "big.cpp",
+                        "int big() {\n" + body + "\n    return 0;\n}\n")
+
+    findings = detect_cpp.collect([path], max_func=10)
+
+    assert "golint/fnsize" in rules_of(findings)
+    assert lines_of(findings, "golint/fnsize") == [1]
+
+
+def test_close_guard_prevents_index_error(tmp_path):
+    """`close < fend` 这个夹紧是承重的:去掉它就崩。
+
+    样本让**函数自己的**右花括号也被行注释吃掉,于是深度永远回不到基线,close 会
+    一路走到 fend+1,body_hi 随之越界。变异测试实测把 `close < fend` 改成
+    `close <= fend` 立刻 IndexError——正是源码注释里说要防的那个崩溃,
+    而它此前没有测试守(只用"右花括号被注释吃掉"的样本复现不出来,
+    那时函数末尾的 `}` 会把 depth 拉回基线,close 根本不会走过头)。
+    """
+    src = ("void f(Node* p) {\n"
+           "    if (p == nullptr) {\n"
+           "        return;\n"
+           "    return p->x;\n"
+           "// }\n")
+    path = write_source(tmp_path, "unclosed.cpp", src)
+
+    findings = detect_cpp.collect([path], max_func=1)
+
+    assert isinstance(findings, list)      # 不抛异常即通过
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

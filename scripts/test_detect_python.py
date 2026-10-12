@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # pylint: disable=wrong-import-position
 import detect_python  # noqa: E402
+from _testhelpers import lines_of  # noqa: E402
 
 # 130 字符,超过 120 阈值;字符串字面量保持完整,只靠外层赋值超限。
 # ("value = " 8 字符 + repr 的一对引号 2 + 120 个 x)
@@ -330,6 +331,131 @@ def test_default_cmdline_budget_is_below_windows_limit():
     而分批逻辑的测试一条都不会红。
     """
     assert 0 < detect_python._CMDLINE_BUDGET < 32767
+
+
+UNUSED_IMPORT = """\
+import os
+import sys
+
+print(sys.argv)
+"""
+
+UNUSED_VARIABLE = """\
+def f():
+    used = 1
+    dead = 2
+    return used
+"""
+
+
+def test_unused_import_is_reported(tmp_path):
+    """未使用导入要报。
+
+    变异测试实测:把 unused-import 的别名集清空,56 条测试照样全绿——
+    这条 pylint 规则处于"删了没人发现"状态。
+    """
+    path = _write_sample(str(tmp_path), UNUSED_IMPORT)
+
+    assert "unused-import" in _rules(detect_python.collect([path]))
+
+
+def test_unused_variable_is_reported(tmp_path):
+    """只赋值不读取的变量要报。
+
+    变异测试实测:把 unused-variable 的别名集清空,56 条测试照样全绿。
+    """
+    path = _write_sample(str(tmp_path), UNUSED_VARIABLE)
+
+    assert "unused-variable" in _rules(detect_python.collect([path]))
+
+
+def test_complexity_base_is_one():
+    """没有判定点的函数 CCN 必须是 1,不是 0。
+
+    变异测试实测:把 _own_complexity 的基数从 1 改成 0,全仓库 CCN 集体少 1,
+    而没有任何用例断言过具体数值——自扫仍显示 1 条 ccn,看着一切正常。
+    """
+    import ast
+
+    tree = ast.parse("def trivial():\n    return 1\n")
+
+    assert detect_python._own_complexity(tree.body[0]) == 1
+
+
+def test_syntax_error_reported_once_not_twice(tmp_path):
+    """同一个语法错误文件只报一条 error。
+
+    pylint 报 E0001,AST 回退也报一条,两条路径不去重时一个坏文件算成
+    "2 处违规"——条数对不上,且看着像两个独立问题。
+    """
+    path = _write_sample(str(tmp_path), "def broken(:\n    pass\n")
+
+    findings = [f for f in detect_python.collect([path]) if f.rule == "error"]
+
+    assert len(findings) == 1, findings
+
+
+def test_ast_line_numbers_survive_form_feed(tmp_path):
+    """AST 回退路径的行号也不能被 0x0C 带偏。
+
+    `split_lines` 有三个调用点:scan_lines、这里的行宽、pylint 输出解析。
+    变异测试实测只把这一处换回 str.splitlines(),测试照样全绿——另两个
+    调用点没有自己的守军。
+    """
+    # 第 2 行是 130 字符;0x0C 在第 1 行。若按 splitlines 断行,超长行会报成第 3 行。
+    body = "x = 1\n\x0c" + "y = " + repr("z" * 120) + "\n"
+    path = _write_sample(str(tmp_path), body)
+
+    findings = detect_python.collect([path], use_pylint=False)
+
+    assert lines_of(findings, "line-too-long") == [2]
+
+
+def test_max_line_length_is_passed_to_pylint(monkeypatch, tmp_path):
+    """--max-line-length 必须真的传给 pylint。
+
+    曾有一条用例想守"两种模式下 AST 可判规则结论一致",但样本行是 130 字符,
+    在 pylint 默认 100 和本项目 120 之下都超限——对 100~120 区间的阈值漂移
+    完全失明。这里直接断言参数传了过去。
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _write_sample(str(tmp_path), "x = 1\n")
+
+    detect_python.collect([str(tmp_path)], max_line=137)
+
+    assert "--max-line-length" in captured["cmd"]
+    assert "137" in captured["cmd"]
+
+
+def test_pylint_output_parsing_survives_form_feed(monkeypatch, tmp_path):
+    """pylint 输出里的 0x0C 不能让一条明细变成两条。
+
+    pylint 在 duplicate-code(R0801)里会回显源码行,那一行里可能带 0x0C。
+    解析用 str.splitlines() 时会把它切成两半,两半各自都长得像一条明细,于是一条
+    变两条;split_lines 按 pylint 的口径把它留在同一行,贪婪的 file 段虽然还是会
+    匹配,但只产出一条。变异测试实测:把这一处换回 splitlines(),本用例由 1 条变 2 条。
+
+    顺带记一个**未修的解析隐患**:`_PYLINT_LINE` 的 file 段是贪婪 `.+`,所以源码行里
+    只要出现 `xxx:N:M: CODE: msg (sym)` 的形状就会被当成明细——和 0x0C 无关。
+    """
+    echoed = ("sample.py:2:0: C0301: Line too long (130/120) (line-too-long)"
+              "\x0c "
+              "sample.py:3:0: C0301: Line too long (140/120) (line-too-long)")
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda cmd, **kw: SimpleNamespace(stdout=echoed, stderr="",
+                                         returncode=0))
+    _write_sample(str(tmp_path), "x = 1\n")
+
+    findings = detect_python.collect([str(tmp_path)])
+
+    assert len(findings) == 1, findings
 
 
 def test_main_returns_2_when_no_python_files(tmp_path):

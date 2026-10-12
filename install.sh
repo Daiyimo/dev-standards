@@ -32,7 +32,16 @@ if [ -n "${CLAUDE_SKILLS_SRC:-}" ]; then
   echo "==> 从本地源码同步:$CLAUDE_SKILLS_SRC -> $DEST"
   rm -rf "$DEST"   # 源码即权威,无需备份
   mkdir -p "$DEST"   # 必须重建目标本身:上面刚删掉,只建父目录会让 tar -C 失败
-  ( cd "$CLAUDE_SKILLS_SRC" && tar --exclude=.git -cf - . ) | tar -xf - -C "$DEST"
+  # 只排除 .git 是不够的:本地源码树里的评审临时目录、测试缓存会一起被装进 skill,
+  # 既污染安装副本,也让"自扫只有 1 处 ccn"这类基线失效。这里按名字排除已知的
+  # 生成物/暂存目录;新的暂存目录应该同时加进 .gitignore 和这里。
+  ( cd "$CLAUDE_SKILLS_SRC" && tar \
+      --exclude=.git \
+      --exclude=__pycache__ \
+      --exclude=.pytest_cache \
+      --exclude=.review_tmp \
+      --exclude='*.pyc' \
+      -cf - . ) | tar -xf - -C "$DEST"
 elif [ -d "$DEST/.git" ]; then
   if ! command -v git >/dev/null 2>&1; then
     echo "错误:未找到 git,请先安装 git 后重试。" >&2

@@ -149,35 +149,6 @@ def test_collect_raises_when_no_go_files(tmp_path):
         detect_go.collect([str(tmp_path)])
 
 
-TOP_LEVEL_INTERFACE = """package sample
-
-type TopIface interface {
-    Do()
-}
-
-type TopStruct struct {
-    A int
-}
-"""
-
-
-def test_top_level_interface_uses_interfacecomment(tmp_path):
-    """顶层 type 也分 interface 与 struct,规则名不能串。
-
-    曾在这里硬编码 structcomment,于是顶层接口全被报成 structcomment,而
-    `--rules golint/interfacecomment` 一条都筛不到——registry 把两条当成独立
-    规则列了两行,门禁按规则名筛时静默少一批。分组内的判据本来是对的,顶层漏了。
-    """
-    path = write_source(tmp_path, "iface.go", TOP_LEVEL_INTERFACE)
-
-    findings = detect_go.collect([path])
-
-    assert rules_of(findings) >= {"golint/interfacecomment", "golint/structcomment"}
-    iface = [f for f in findings if f.rule == "golint/interfacecomment"]
-    assert [f.line for f in iface] == [3]
-    assert "TopIface" in iface[0].message
-
-
 TOP_LEVEL_INTERFACE = """\
 package sample
 
@@ -213,6 +184,87 @@ def test_main_returns_2_when_no_go_files(tmp_path):
     (tmp_path / "notes.txt").write_text("not go", encoding="utf-8")
 
     assert detect_go.main([str(tmp_path)]) == 2
+
+
+# 每个包只需要一处包注释,写在任意一个文件里都算。
+PACKAGE_MISSING = """\
+package sample
+
+func Do() {}
+"""
+
+
+def test_missing_package_comment_is_reported(tmp_path):
+    """缺包注释要报 golint/package。
+
+    变异测试实测:把这条规则整段关掉,56 条测试照样全绿——`test_bom_file_...`
+    只断言"带 BOM 时不漏报",没有任何正样本说"没有包注释时必须报"。
+    """
+    path = write_source(tmp_path, "nopkg.go", PACKAGE_MISSING)
+
+    findings = detect_go.collect([path])
+
+    assert "golint/package" in rules_of(findings)
+
+
+def test_go_fnsize_rule_can_be_reported(tmp_path):
+    """Go 的 golint/fnsize 本身要能报出来,行号还得对。
+
+    变异测试实测两件事都没人守:整条规则关掉照样全绿;行号 idx+1 改成 idx 也全绿。
+    """
+    body = "\n".join(f"    x{i} := {i}" for i in range(20))
+    path = write_source(tmp_path, "big.go",
+                        "package sample\n\nfunc Big() {\n" + body + "\n}\n")
+
+    findings = detect_go.collect([path], max_func=10)
+
+    assert "golint/fnsize" in rules_of(findings)
+    assert lines_of(findings, "golint/fnsize") == [3]
+
+
+GO_TYPE_GROUP = """\
+package sample
+
+type (
+    UndocIface interface {
+        Do()
+    }
+    UndocStruct struct {
+        A int
+    }
+)
+"""
+
+
+def test_type_group_specs_are_classified(tmp_path):
+    """`type ( ... )` 分组块里的接口和结构体要走对规则名。
+
+    变异测试实测:把 RE_GROUP_OPEN 的 type 分支关掉,`_group_spec_finding` 的
+    group_kind=="type" 那一支整个没有测试覆盖——现在它能正确报,删了没人知道。
+    """
+    path = write_source(tmp_path, "group.go", GO_TYPE_GROUP)
+
+    findings = detect_go.collect([path])
+
+    assert rules_of(findings) >= {"golint/interfacecomment",
+                                  "golint/structcomment"}
+    # 分组里的接口和结构体都该按自己的规则名报,且行号各就各位
+    assert lines_of(findings, "golint/interfacecomment") == [4]
+    assert lines_of(findings, "golint/structcomment") == [7]
+
+
+def test_group_close_depth_guard_keeps_fields_out(tmp_path):
+    """分组关闭侧的 depth 门槛是承重的:去掉它,结构体字段会被误报成导出符号。
+
+    变异测试实测:把 `depth_before == 0` 这个门槛从关闭侧去掉,
+    `type ( S struct { Upper int } )` 里的字段 Upper 会被报成 golint/structcomment。
+    """
+    src = "package sample\n\ntype (\n    S struct {\n        Upper int\n    }\n)\n"
+    path = write_source(tmp_path, "fields.go", src)
+
+    findings = detect_go.collect([path])
+
+    assert "Upper" not in " ".join(f.message for f in findings)
 
 
 if __name__ == "__main__":
